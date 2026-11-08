@@ -1,8 +1,21 @@
-# Colab AI CLI v0.2.1 — Correções de Voice
+## VoxCPM2: correção da versão 0.2.2
 
-Gerenciador Linux de GPUs sob demanda por meio da CLI oficial do Google Colab. A v0.2.1 corrige incompatibilidades encontradas após testes reais da v0.2.0. Preserva o Qwen para programação, as três variantes Qwen3-TTS, o túnel SSH local e os comandos de monitoramento.
+A v0.2.1 enviava `seed=42` ao `VoxCPM.generate`. O PyPI `voxcpm==2.0.3` não aceita esse argumento, produzindo `TypeError` antes da geração. A v0.2.2 omite esse parâmetro e fixa a versão para manter a API estável. A correção foi testada com um substituto local que reproduz a assinatura do pacote publicado; a primeira geração real na L4 ainda precisa ser verificada. Outros perfis, inclusive Kokoro e Code, foram preservados.
 
-**Situação da validação:** 71 testes automatizados locais passaram (mock de inferência e cliente), sem abrir GPUs reais. **Nenhum dos quatro novos perfis foi validado de ponta a ponta em T4/L4/G4 após essas alterações.** O Higgs TTS 3 continua experimental, inclusive em compatibilidade de kernels CUDA e VRAM. Não confunda testes simulados com sucesso em Colab real.
+**Como testar após `stop` e atualização:**
+
+```bash
+ai-colab start voice --voice-model voxcpm2 --gpu L4
+ai-colab voice generate --text "Olá! Estou testando a geração de voz." --style "Voz feminina brasileira, suave e acolhedora" --output ~/Downloads/voxcpm2-teste.wav
+```
+
+Se a GPU ainda estiver ativa executando a v0.2.1, instalar o cliente local não substitui o worker remoto em memória. Encerre a sessão anterior com `ai-colab stop` antes de iniciar a nova versão.
+
+# Colab AI CLI v0.2.2 — Correções de Voice
+
+Gerenciador Linux de GPUs sob demanda por meio da CLI oficial do Google Colab. A v0.2.2 corrige incompatibilidades encontradas após testes reais da v0.2.0. Preserva o Qwen para programação, as três variantes Qwen3-TTS, o túnel SSH local e os comandos de monitoramento.
+
+**Situação da validação:** testes automatizados locais passaram (mock de inferência e cliente), sem abrir GPUs reais. **Nenhum dos quatro novos perfis foi validado de ponta a ponta em T4/L4/G4 após essas alterações.** O Higgs TTS 3 continua experimental, inclusive em compatibilidade de kernels CUDA e VRAM. Não confunda testes simulados com sucesso em Colab real.
 
 ## Instalação local
 
@@ -13,7 +26,7 @@ colab --auth=oauth2 sessions
 
 # Na pasta colab-ai-cli extraída do ZIP
 bash install.sh
-ai-colab --version       # 0.2.1
+ai-colab --version       # 0.2.2
 ai-colab models
 ai-colab ssh-check        # valida chave sem gastar CU
 ```

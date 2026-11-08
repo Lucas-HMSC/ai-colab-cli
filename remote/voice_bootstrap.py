@@ -64,7 +64,7 @@ if not marker.exists():
     if qwen_engine:
         packages = ['qwen-tts']
     elif variant == 'voxcpm2':
-        packages = ['voxcpm', 'setuptools']
+        packages = ['voxcpm==2.0.3', 'setuptools']
     elif variant == 'chatterbox-br':
         # Compatibilidade oficial do Chatterbox 0.1.7 com PyTorch 2.6.0.
         packages = ['chatterbox-tts==0.1.7', 'torchvision==0.21.0']

@@ -148,7 +148,9 @@ def synthesize(data: dict) -> bytes:
             if not 4 <= steps <= 30:
                 raise UserError('--steps precisa estar entre 4 e 30')
             kwargs = {'text': text, 'cfg_value': 2.0,
-                      'inference_timesteps': steps, 'seed': 42}
+                      'inference_timesteps': steps}
+            # VoxCPM 2.0.3 (PyPI) não aceita 'seed' em _generate().
+            # A versão GitHub mais nova aceita: omitir mantém compatibilidade com ambas.
             path = None
             try:
                 if ref_audio is not None:

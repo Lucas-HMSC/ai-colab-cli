@@ -1,3 +1,10 @@
+# v0.2.2 — Correção de inferência do VoxCPM2
+
+- Corrigido `TypeError` na geração do VoxCPM2: removido argumento `seed=42` que não é aceito por `voxcpm` 2.0.3, embora seja aceito pelo código mais recente do GitHub.
+- Fixada instalação da versão `voxcpm==2.0.3` para evitar desvio entre API de release e API do repositório.
+- Acrescentado teste com assinatura estrita da API publicada; Kokoro e modo programação não foram alterados.
+- **Não validado em uma GPU L4 real nesta versão.**
+
 # Histórico de alterações
 
 ## 0.2.1 — compatibilidade real das engines Voice (08/11/2026)
