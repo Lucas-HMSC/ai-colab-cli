@@ -38,11 +38,21 @@ def fake_voice_api(variant):
     if variant == 'kokoro':
         pkg['kokoro'] = types.SimpleNamespace(KPipeline=lambda **kw: lambda *a, **k: [(None,None,np.zeros(2400, dtype=np.float32))])
     if variant == 'chatterbox-br':
-        cb = types.SimpleNamespace(ChatterboxMultilingualTTS=types.SimpleNamespace(from_pretrained=lambda **kw:fake))
+        fake.load_state_dict = mock.Mock(return_value=types.SimpleNamespace(missing_keys=[],unexpected_keys=[]))
+        fake.to = mock.Mock(return_value=fake)
+        fake.eval = mock.Mock(return_value=fake)
         pkg['chatterbox'] = types.ModuleType('chatterbox')
-        pkg['chatterbox.mtl_tts'] = cb
+        pkg['chatterbox.mtl_tts'] = types.SimpleNamespace(
+            ChatterboxMultilingualTTS=mock.Mock(return_value=fake),
+            Conditionals=types.SimpleNamespace(load=lambda *a,**k:fake))
+        pkg['chatterbox.models.t3'] = types.SimpleNamespace(T3=lambda *a,**kw:fake)
+        pkg['chatterbox.models.t3.modules.t3_config'] = types.SimpleNamespace(
+            T3Config=types.SimpleNamespace(multilingual=lambda:types.SimpleNamespace()))
+        pkg['chatterbox.models.s3gen'] = types.SimpleNamespace(S3Gen=lambda:fake)
+        pkg['chatterbox.models.voice_encoder'] = types.SimpleNamespace(VoiceEncoder=lambda:fake)
+        pkg['chatterbox.models.tokenizers'] = types.SimpleNamespace(MTLTokenizer=lambda *a:fake)
         pkg['safetensors.torch'] = types.SimpleNamespace(load_file=lambda *a: {})
-        pkg['huggingface_hub'] = types.SimpleNamespace(hf_hub_download=lambda **kw:'/tmp/mock-ptbr.safetensors')
+        pkg['huggingface_hub'] = types.SimpleNamespace(snapshot_download=lambda **kw:'/tmp/mock-chatterbox')
     if variant == 'higgs3':
         pkg['transformers'] = types.SimpleNamespace(pipeline=lambda *a, **kw: lambda text: {
             'audio': np.zeros(2400, dtype=np.float32), 'sampling_rate':24000})
@@ -55,7 +65,11 @@ def fake_voice_api(variant):
     mod=importlib.util.module_from_spec(spec)
     with mock.patch.dict(sys.modules, pkg),mock.patch.object(Path, 'read_text', read_override), \
          mock.patch('http.server.ThreadingHTTPServer'):
-        spec.loader.exec_module(mod)
+        if variant == 'chatterbox-br':
+            with mock.patch.object(torch, 'load', return_value={}):
+                spec.loader.exec_module(mod)
+        else:
+            spec.loader.exec_module(mod)
     return mod, fake
 
 
@@ -68,7 +82,7 @@ class VoiceV020Tests(unittest.TestCase):
                 args=app.parser_make().parse_args(['start','voice','--voice-model',variant])
                 self.assertEqual(args.voice_model,variant)
         self.assertEqual(app.VOICE_DEFAULT_GPU['kokoro'],'T4')
-        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'G4')
+        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'H100')
         self.assertNotIn('clone',app.VOICE_CAPABILITIES['higgs3'])
         self.assertIn('clone',app.VOICE_CAPABILITIES['voxcpm2'])
 
@@ -93,7 +107,7 @@ class VoiceV020Tests(unittest.TestCase):
 
     def test_chatterbox_loads_brazilian_t3(self):
         server,engine=fake_voice_api('chatterbox-br')
-        engine.t3.load_state_dict.assert_called_once_with({},strict=True)
+        self.assertIn(mock.call({}, strict=True), engine.load_state_dict.call_args_list)
         audio=server.synthesize({'text':'Bom dia pessoal','language':'Portuguese'})
         self.assertTrue(audio.startswith(b'RIFF'))
         self.assertEqual(engine.generate.call_args.kwargs['language_id'],'pt')

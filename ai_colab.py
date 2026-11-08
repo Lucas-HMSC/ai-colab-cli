@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -71,7 +71,7 @@ VOICE_MODELS = {
     "higgs3": "bosonai/higgs-tts-3-4b",
 }
 VOICE_DEFAULT_GPU = {"custom": "L4", "design": "L4", "clone": "L4",
-                     "voxcpm2": "L4", "chatterbox-br": "L4", "kokoro": "T4", "higgs3": "G4"}
+                     "voxcpm2": "L4", "chatterbox-br": "L4", "kokoro": "T4", "higgs3": "H100"}
 VOICE_MIN_GIB = {"custom": 10, "design": 10, "clone": 10,
                  "voxcpm2": 10, "chatterbox-br": 10, "kokoro": 5, "higgs3": 70}
 VOICE_CAPABILITIES = {
@@ -83,7 +83,7 @@ VOICE_CAPABILITIES = {
 VOICE_NOTES = {"voxcpm2": "Design e clonagem; Apache-2.0",
                "chatterbox-br": "PT-BR com pesos regionais sobre V3; MIT",
                "kokoro": "82M, vozes brasileiras; Apache-2.0",
-               "higgs3": "EXPERIMENTAL (vLLM-Omni), GPU G4/H100; licença Research/Creator Grant"}
+               "higgs3": "EXPERIMENTAL: H100 é a GPU da receita oficial; G4 não validada; licença Research/Creator Grant"}
 SPEAKERS = ("Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee")
 
 
@@ -589,8 +589,11 @@ def do_start(args) -> None:
     if mode == "voice":
         if args.voice_model == "higgs3":
             if args.gpu == "A100":
-                raise RuntimeError("Higgs TTS 3 requer preferencialmente G4/H100 (~80 GiB ou mais). "
-                                   "A100 padrão costuma ter 40 GiB; selecione --gpu G4 antes de iniciar a VM.")
+                raise RuntimeError("Higgs TTS 3: A100 padrão 40 GiB não é a GPU validada na receita oficial. "
+                                   "Use --gpu H100, ou --gpu G4 por sua conta e risco experimental.")
+            if args.gpu == "G4":
+                print("ATENÇÃO: Higgs TTS 3 só está documentado oficialmente na H100. "
+                      "G4 é experimental e pode falhar na inicialização; consulte logs --source omni.")
             print("ATENÇÃO: Higgs TTS 3 é experimental e usa licença Boson Research/Non-Commercial. "
                   "Uso como serviço ou produto comercial exige outra licença. "
                   "Conteúdo de criadores pode exigir atribuição; consulte a licença oficial.")
@@ -1038,7 +1041,7 @@ def parser_make():
     sub = p.add_subparsers(dest="command", required=True)
     a = sub.add_parser("start", help="Inicia uma modalidade")
     a.add_argument("mode", choices=[*PROFILES, "voice", *COMING], default="code", nargs="?")
-    a.add_argument("--gpu", default=None, help="Voice: L4 por padrão, T4 para kokoro, A100 para higgs3; Code: G4")
+    a.add_argument("--gpu", default=None, help="Voice: L4 padrão, T4 kokoro, H100 higgs3 (G4 experimental); Code: G4")
     a.add_argument("--voice-model", choices=list(VOICE_MODELS), default="custom",
                    help="custom/design/clone (Qwen), voxcpm2, chatterbox-br, kokoro, higgs3")
     a.add_argument("--hf-mode", choices=["fast", "normal"], help="Sobrescreve o padrão hf_xet para esta sessão")

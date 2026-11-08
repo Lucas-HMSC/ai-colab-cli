@@ -1,3 +1,10 @@
+# Colab AI CLI 0.2.3
+
+- Carregador dedicado para o pacote regional Chatterbox V3 PT-BR; remove API incompatível de PyPI.
+- Corrigida instalação e invocação do servidor Higgs conforme receita vLLM-Omni, com H100 padrão e G4 experimental.
+- Mantidas demais modalidades e interfaces.
+- Correções ainda dependem de validação em GPU real.
+
 # v0.2.2 — Correção de inferência do VoxCPM2
 
 - Corrigido `TypeError` na geração do VoxCPM2: removido argumento `seed=42` que não é aceito por `voxcpm` 2.0.3, embora seja aceito pelo código mais recente do GitHub.

@@ -1,6 +1,6 @@
 ## VoxCPM2: correção da versão 0.2.2
 
-A v0.2.1 enviava `seed=42` ao `VoxCPM.generate`. O PyPI `voxcpm==2.0.3` não aceita esse argumento, produzindo `TypeError` antes da geração. A v0.2.2 omite esse parâmetro e fixa a versão para manter a API estável. A correção foi testada com um substituto local que reproduz a assinatura do pacote publicado; a primeira geração real na L4 ainda precisa ser verificada. Outros perfis, inclusive Kokoro e Code, foram preservados.
+A v0.2.1 enviava `seed=42` ao `VoxCPM.generate`. O PyPI `voxcpm==2.0.3` não aceita esse argumento, produzindo `TypeError` antes da geração. A v0.2.3 omite esse parâmetro e fixa a versão para manter a API estável. A correção foi testada com um substituto local que reproduz a assinatura do pacote publicado; a primeira geração real na L4 ainda precisa ser verificada. Outros perfis, inclusive Kokoro e Code, foram preservados.
 
 **Como testar após `stop` e atualização:**
 
@@ -11,9 +11,9 @@ ai-colab voice generate --text "Olá! Estou testando a geração de voz." --styl
 
 Se a GPU ainda estiver ativa executando a v0.2.1, instalar o cliente local não substitui o worker remoto em memória. Encerre a sessão anterior com `ai-colab stop` antes de iniciar a nova versão.
 
-# Colab AI CLI v0.2.2 — Correções de Voice
+# Colab AI CLI v0.2.3 — Correções de Voice
 
-Gerenciador Linux de GPUs sob demanda por meio da CLI oficial do Google Colab. A v0.2.2 corrige incompatibilidades encontradas após testes reais da v0.2.0. Preserva o Qwen para programação, as três variantes Qwen3-TTS, o túnel SSH local e os comandos de monitoramento.
+Gerenciador Linux de GPUs sob demanda por meio da CLI oficial do Google Colab. A v0.2.3 corrige incompatibilidades encontradas após testes reais da v0.2.0. Preserva o Qwen para programação, as três variantes Qwen3-TTS, o túnel SSH local e os comandos de monitoramento.
 
 **Situação da validação:** testes automatizados locais passaram (mock de inferência e cliente), sem abrir GPUs reais. **Nenhum dos quatro novos perfis foi validado de ponta a ponta em T4/L4/G4 após essas alterações.** O Higgs TTS 3 continua experimental, inclusive em compatibilidade de kernels CUDA e VRAM. Não confunda testes simulados com sucesso em Colab real.
 
@@ -153,3 +153,64 @@ O launcher `claude-colab` mantém `--dangerously-skip-permissions`, como solicit
 - Higgs TTS 3: https://huggingface.co/bosonai/higgs-tts-3-4b
 - vLLM-Omni instalação: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
 - Google Colab CLI: https://github.com/googlecolab/google-colab-cli
+
+
+## v0.2.3 — Chatterbox PT-BR e Higgs
+
+- **Chatterbox PT-BR (L4):** loader regional específico: T3 PT-BR, decoder S3Gen V3,
+  tokenizer PT-BR, voice encoder e condições do repositório base. Instalação do
+  código upstream fixada no commit `5de7a54`, pois o PyPI 0.1.7 não aceita o
+  parâmetro `t3_model` e o loader de V3 não suporta diretamente `s3gen_v3.pt`.
+  `strict=False` é aplicado **somente** ao decodificador V3, como na implementação
+  de referência, e diferenças de chaves são registradas no log.
+- **Higgs TTS 3 (EXPERIMENTAL):** instalação de vLLM 0.22.0 com o commit
+  vLLM-Omni `36e048fd` recomendado pela receita específica do Higgs V3.
+  A GPU padrão passa a H100 (80 GiB); G4 pode ser selecionada explicitamente,
+  mas **não é validada na receita oficial**. O erro `Engine core initialization failed`
+  é apenas um sintoma: para diagnosticar a causa, consulte antes de `stop`:
+  `ai-colab logs --source omni --lines 250`.
+- Nenhuma alteração no comportamento de Code, Qwen3-TTS, VoxCPM2 ou Kokoro.
+
+Estas correções foram verificadas somente por testes locais (sem carregar os
+pesos em GPU); não constituem validação de geração real.
+
+
+### Diagnóstico do Qwen VoiceDesign
+
+Na v0.2.3, a chamada oficial `generate_voice_design(text=..., language=...,
+instruct=...)` é preservada. Não foi alterada uma engine de voz que já gerou
+áudio corretamente. Quando ocorrer HTTP 500, a resposta agora classifica
+`cuda_memory`, `api_compatibility`, `validation` ou `engine` e informa a localização
+sem expor o texto enviado. Para diagnosticar com a L4 ainda ativa:
+
+```bash
+ai-colab logs --source vllm --lines 100
+ai-colab diagnostics
+```
+
+Faça primeiro um teste curto para isolar tamanho de entrada:
+
+```bash
+ai-colab start voice --voice-model design --gpu L4
+ai-colab voice design --text "Olá! Esta é uma experiência de voz." \
+  --description "Voz feminina brasileira calma e natural." \
+  --output ~/Downloads/qwen-design-curto.wav
+```
+
+Se o teste curto funcionar e um texto longo falhar, teste trechos menores,
+sem concluir automaticamente que o problema é VRAM. Evite registrar texto
+sensível de prompts nos logs de suporte.
+
+### Modelos experimentais e custo
+
+Higgs TTS 3 depende do vLLM-Omni e a receita oficial usa 1x H100. Sua execução
+no Colab G4 ainda não foi comprovada. Para investigar falha de `Orchestrator`:
+
+```bash
+ai-colab logs --source omni --lines 250
+```
+
+Se o Colab já tiver encerrado a VM, não há garantia de persistência desses logs.
+A atualização do cliente local não substitui o worker em memória; após encerrar
+uma sessão, inicie outra explicitamente. As correções foram verificadas localmente,
+**não** em GPU real.

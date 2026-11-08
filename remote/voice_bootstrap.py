@@ -58,7 +58,7 @@ if not qwen_engine:
 else:
     print('Qwen3-TTS: preservando Python do Colab, conhecido como funcional.', flush=True)
 
-marker = venv / '.colab-ai-ready-v021'
+marker = venv / '.colab-ai-ready-v023'
 if not marker.exists():
     common = ['huggingface_hub>=0.34', 'hf_xet', 'numpy', 'soundfile']
     if qwen_engine:
@@ -66,8 +66,9 @@ if not marker.exists():
     elif variant == 'voxcpm2':
         packages = ['voxcpm==2.0.3', 'setuptools']
     elif variant == 'chatterbox-br':
-        # Compatibilidade oficial do Chatterbox 0.1.7 com PyTorch 2.6.0.
-        packages = ['chatterbox-tts==0.1.7', 'torchvision==0.21.0']
+        # Código upstream fixado, pois o PyPI 0.1.7 não tem loader V3.
+        # O projeto fixa PyTorch 2.6; torchvision deve corresponder a 0.21.
+        packages = ['git+https://github.com/resemble-ai/chatterbox.git@5de7a54', 'torchvision==0.21.0']
     elif variant == 'kokoro':
         packages = ['kokoro==0.9.4', 'misaki[en]==0.9.4']
     elif variant == 'higgs3':
@@ -75,11 +76,12 @@ if not marker.exists():
     else:
         raise RuntimeError('Engine Voice desconhecida: ' + variant)
     if variant == 'higgs3':
-        print('Instalando vLLM e vLLM-Omni 0.32.0 (pode exigir vários GB)...', flush=True)
+        print('Instalando stack Higgs conforme receita oficial (vLLM 0.22 + vLLM-Omni commit 36e048fd); pode consumir vários GB...', flush=True)
+        # Fixar versões conjuntamente: misturar o vLLM 0.32 com o adaptador Higgs
+        # da receita 0.22 pode iniciar o processo, mas falhar dentro do orquestrador.
         subprocess.check_call([uv, 'pip', 'install', '--python', str(venv_python),
-                               '--torch-backend=cu130', 'vllm==0.32.0'])
-        subprocess.check_call([uv, 'pip', 'install', '--python', str(venv_python),
-                               'vllm-omni==0.32.0'] + common)
+                               '--torch-backend=cu128', 'vllm==0.22.0',
+                               'git+https://github.com/vllm-project/vllm-omni.git@36e048fd'] + common)
     elif qwen_engine:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-U'] + common + packages)
     else:
@@ -98,10 +100,11 @@ if variant == 'kokoro':
 downloaded_marker = venv / '.model-downloaded'
 if not downloaded_marker.exists():
     if variant == 'chatterbox-br':
-        # ChatterboxMultilingualTTS baixa sozinho o checkpoint base V3 no load.
-        # Só é preciso pré-baixar o ajuste regional, sem duplicar os demais arquivos.
+        # O pacote PT-BR tem T3 e S3Gen V3. O from_pretrained() PyPI é
+        # incompatível; o voice_api usa um carregador regional específico.
         command = '''from huggingface_hub import snapshot_download
-snapshot_download(repo_id="ResembleAI/Chatterbox-Multilingual-pt-br", allow_patterns=["t3_pt_br.safetensors"])
+snapshot_download(repo_id="ResembleAI/Chatterbox-Multilingual-pt-br", allow_patterns=["t3_pt_br.safetensors", "s3gen_v3.pt", "grapheme_mtl_merged_expanded_v1.json"])
+snapshot_download(repo_id="ResembleAI/chatterbox", allow_patterns=["ve.pt", "conds.pt"])
 '''
     elif variant == 'kokoro':
         command = '''from huggingface_hub import snapshot_download
@@ -142,11 +145,11 @@ if process_alive(pidfile, b'colab-ai-voice-api.py'):
     sys.exit(0)
 
 if variant == 'higgs3':
-    if not process_alive(aux_pidfile, b'vllm-omni'):
+    if not process_alive(aux_pidfile, b'/bin/vllm'):
         aux_pidfile.unlink(missing_ok=True)
-        omni = venv / 'bin/vllm-omni'
+        omni = venv / 'bin/vllm'
         if not omni.exists():
-            raise RuntimeError('Executável vllm-omni ausente após instalação; consulte bootstrap')
+            raise RuntimeError('Executável vllm ausente após instalação; consulte bootstrap')
         omni_cmd = [str(omni), 'serve', model, '--host', '127.0.0.1',
                     '--port', '8002', '--trust-remote-code', '--omni']
         with aux_log.open('ab') as log:
@@ -158,7 +161,7 @@ if variant == 'higgs3':
         time.sleep(3)
         if backend.poll() is not None:
             print('\n'.join(aux_log.read_text(errors='replace').splitlines()[-25:]), flush=True)
-            raise RuntimeError('vLLM-Omni encerrou na inicialização')
+            raise RuntimeError('vLLM-Omni encerrou na inicialização; consulte ai-colab logs --source omni --lines 250')
 
 pidfile.unlink(missing_ok=True)
 with logfile.open('ab') as log:

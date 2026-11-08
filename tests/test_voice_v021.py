@@ -20,7 +20,7 @@ from test_voice_v020 import fake_voice_api
 
 class RuntimeCompatibilityTests(unittest.TestCase):
     def test_registry_preserves_code_and_qwen(self):
-        self.assertEqual(app.VERSION, '0.2.2')
+        self.assertEqual(app.VERSION, '0.2.3')
         self.assertEqual(app.PROFILES['code']['model'],'Qwen/Qwen3.8-27B-FP8')
         self.assertIn('262144',str(app.parser_make().parse_args(['start','code','--context','262144'])))
         for q in ('custom','design','clone'):
@@ -29,10 +29,10 @@ class RuntimeCompatibilityTests(unittest.TestCase):
     def test_runtime_isolation_and_pytorch_pair(self):
         source=(ROOT/'remote/voice_bootstrap.py').read_text()
         self.assertIn("else '3.12' if variant == 'higgs3' else '3.11'",source)
-        self.assertIn("'chatterbox-tts==0.1.7', 'torchvision==0.21.0'",source)
+        self.assertIn("git+https://github.com/resemble-ai/chatterbox.git@5de7a54",source)
         self.assertIn("'kokoro==0.9.4', 'misaki[en]==0.9.4'",source)
-        self.assertIn("'vllm-omni==0.32.0'",source)
-        self.assertIn("'--torch-backend=cu130'",source)
+        self.assertIn('vllm-omni.git@36e048fd',source)
+        self.assertIn("'--torch-backend=cu128'",source)
         self.assertIn('venv_python = Path(sys.executable) if qwen_engine',source)
         self.assertIn("'optimize=False'".strip("'"), (ROOT/'remote/voice_api.py').read_text())
 
@@ -45,7 +45,7 @@ class RuntimeCompatibilityTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_higgs_default_gpu_and_privacy(self):
-        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'G4')
+        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'H100')
         self.assertGreaterEqual(app.VOICE_MIN_GIB['higgs3'],70)
         self.assertNotIn('clone',app.VOICE_CAPABILITIES['higgs3'])
         self.assertEqual(app.parser_make().parse_args(['logs','--source','omni']).source,'omni')

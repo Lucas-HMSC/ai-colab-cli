@@ -45,18 +45,45 @@ elif VARIANT == 'kokoro':
     from kokoro import KPipeline
     MODEL_OBJ = KPipeline(lang_code='p', device='cuda')
 elif VARIANT == 'chatterbox-br':
-    # O repositório PT-BR traz somente pesos regionais. Carregamos os
-    # componentes base V3 oficiais e substituímos o T3 pelo checkpoint PT-BR.
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    # O pacote PT-BR não carrega diretamente pelo from_pretrained():
+    # (1) PyPI 0.1.7 não aceita t3_model e (2) upstream espera s3gen.pt,
+    # mas o pack regional contém s3gen_v3.pt com dois buffers derivados ausentes.
+    # Instanciamos as peças explicitamente, com validação estrita de todo o
+    # restante do checkpoint, conforme formato descrito no repositório oficial.
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS, Conditionals
+    from chatterbox.models.t3 import T3
+    from chatterbox.models.t3.modules.t3_config import T3Config
+    from chatterbox.models.s3gen import S3Gen
+    from chatterbox.models.voice_encoder import VoiceEncoder
+    from chatterbox.models.tokenizers import MTLTokenizer
     from safetensors.torch import load_file
-    from huggingface_hub import hf_hub_download
-    MODEL_OBJ = ChatterboxMultilingualTTS.from_pretrained(device='cuda', t3_model='v3')
-    regional_path = hf_hub_download(repo_id=MODEL,
-                                   filename='t3_pt_br.safetensors')
-    regional_state = load_file(regional_path)
-    MODEL_OBJ.t3.load_state_dict(regional_state, strict=True)
-    MODEL_OBJ.t3.eval()
-    print('Pesos PT-BR t3_pt_br.safetensors aplicados à base Chatterbox V3.', flush=True)
+    from huggingface_hub import snapshot_download
+    regional = Path(snapshot_download(
+        repo_id=MODEL, allow_patterns=['t3_pt_br.safetensors', 's3gen_v3.pt',
+                                        'grapheme_mtl_merged_expanded_v1.json']))
+    shared = Path(snapshot_download(
+        repo_id='ResembleAI/chatterbox', allow_patterns=['ve.pt', 'conds.pt']))
+    ve = VoiceEncoder()
+    ve.load_state_dict(torch.load(shared / 've.pt', map_location='cpu', weights_only=True))
+    ve.to('cuda').eval()
+    t3 = T3(T3Config.multilingual())
+    t3_state = load_file(regional / 't3_pt_br.safetensors')
+    t3.load_state_dict(t3_state, strict=True)
+    t3.to('cuda').eval()
+    s3gen = S3Gen()
+    # A implementação de referência do pacote V3 usa strict=False para S3Gen.
+    # Logar discrepâncias para diagnóstico, sem exigir chaves específicas da
+    # implementação que podem variar com o commit fixado.
+    state = torch.load(regional / 's3gen_v3.pt', map_location='cpu', weights_only=True)
+    incompat = s3gen.load_state_dict(state, strict=False)
+    print('S3Gen V3: chaves não correspondentes (ausentes/inesperadas):',
+          len(incompat.missing_keys), len(incompat.unexpected_keys), flush=True)
+    s3gen.to('cuda').eval()
+    tokenizer = MTLTokenizer(str(regional / 'grapheme_mtl_merged_expanded_v1.json'))
+    default_conditions = Conditionals.load(shared / 'conds.pt', map_location='cpu').to('cuda')
+    MODEL_OBJ = ChatterboxMultilingualTTS(t3, s3gen, ve, tokenizer, 'cuda',
+                                          conds=default_conditions)
+    print('Chatterbox PT-BR: T3 regional + decodificador V3 carregados.', flush=True)
 elif VARIANT == 'higgs3':
     # Higgs TTS 3 NÃO é um pipeline Transformers genérico.
     # O bootstrap inicia vLLM-Omni (porta privada 8002); este worker faz proxy
@@ -280,9 +307,26 @@ class Handler(BaseHTTPRequestHandler):
             # livre do erro (que pode conter partes da entrada do usuário).
             tb = traceback.extract_tb(err.__traceback__)
             loc = (tb[-1].filename.rsplit('/', 1)[-1] + ':' + str(tb[-1].lineno)) if tb else 'desconhecido'
-            print('Falha inferência ' + VARIANT + ': ' + type(err).__name__ + ' em ' + loc, flush=True)
-            payload = {'error': 'Falha inferência: ' + type(err).__name__,
-                       'location': loc, 'hint': 'ai-colab logs --source vllm --lines 80'}
+            # Nunca serializar str(err) nem traceback inteiro na resposta:
+            # algumas bibliotecas incluem a entrada textual ou caminhos privados.
+            kind = type(err).__name__
+            classification = 'engine'
+            guidance = 'Consulte os logs de inferência e informe tipo/localização do erro.'
+            if isinstance(err, torch.cuda.OutOfMemoryError) or 'out of memory' in str(err).lower():
+                classification = 'cuda_memory'
+                guidance = ('Memória CUDA insuficiente. Tente um texto menor ou uma GPU maior. '
+                            'Não reinicie repetidamente sem inspecionar a VRAM.')
+            elif isinstance(err, TypeError):
+                classification = 'api_compatibility'
+                guidance = 'Incompatibilidade na API da engine; informe arquivo e linha do erro.'
+            elif isinstance(err, ValueError):
+                classification = 'validation'
+                guidance = 'Valor de geração incompatível; confira idioma e parâmetros.'
+            print('Falha inferência ' + VARIANT + ': ' + kind + ' em ' + loc +
+                  ' [' + classification + ']', flush=True)
+            payload = {'error': 'Falha inferência: ' + kind, 'location': loc,
+                       'classification': classification, 'guidance': guidance,
+                       'hint': 'ai-colab logs --source vllm --lines 80'}
             self.reply(500, json.dumps(payload).encode())
 
     def log_message(self, *args):
