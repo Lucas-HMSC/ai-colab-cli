@@ -1,169 +1,142 @@
-# Colab AI CLI v0.2.0 — Code + Voice (5 famílias de TTS)
+# Colab AI CLI v0.2.1 — Correções de Voice
 
-Gerenciador Linux para GPUs temporárias do Google Colab Pro por meio da CLI oficial. `ai-colab` controla a VM; `claude-colab` continua acessando o Qwen de programação pelo túnel SSH privado. **A versão 0.2.0 preserva a v0.1.9 e acrescenta quatro perfis de voz**: VoxCPM2, Chatterbox PT-BR, Kokoro e Higgs TTS 3.
+Gerenciador Linux de GPUs sob demanda por meio da CLI oficial do Google Colab. A v0.2.1 corrige incompatibilidades encontradas após testes reais da v0.2.0. Preserva o Qwen para programação, as três variantes Qwen3-TTS, o túnel SSH local e os comandos de monitoramento.
 
-> **Validação:** 61 testes de integração simulada e regressão passaram no Linux, sem criar GPUs. **Ainda não há testes de inferência real desses quatro backends em Colab.** A primeira execução de cada um pode revelar incompatibilidades de dependências, checkpoints ou VRAM. O Higgs é particularmente experimental.
+**Situação da validação:** 71 testes automatizados locais passaram (mock de inferência e cliente), sem abrir GPUs reais. **Nenhum dos quatro novos perfis foi validado de ponta a ponta em T4/L4/G4 após essas alterações.** O Higgs TTS 3 continua experimental, inclusive em compatibilidade de kernels CUDA e VRAM. Não confunda testes simulados com sucesso em Colab real.
 
-## Instalação
+## Instalação local
 
 ```bash
-# Primeiro uso: instale e autentique a CLI oficial do Colab
+# Se necessário, instale a CLI oficial do Colab e faça autenticação
 uv tool install google-colab-cli
 colab --auth=oauth2 sessions
 
-# Na pasta extraída deste ZIP
+# Na pasta colab-ai-cli extraída do ZIP
 bash install.sh
-ai-colab --version         # 0.2.0
+ai-colab --version       # 0.2.1
 ai-colab models
-ai-colab ssh-check         # não inicia GPU
+ai-colab ssh-check        # valida chave sem gastar CU
 ```
 
-Não há cache persistente no Google Drive; `hf_xet` permanece ativado no modo rápido por padrão. `ai-colab hf normal` permite desativar o alto paralelismo nos próximos starts.
+Atualizar no Linux **não reinicia a VM em uso**. Para aplicar novos scripts remotos a um perfil que falhou, execute `ai-colab stop` e inicie uma nova sessão; não execute `start` repetidamente sobre um worker antigo carregado.
 
-## Escolha de modelos de voz
+## O que foi corrigido
 
-| `--voice-model` | Modelo HF | GPU padrão | Geração | Design | Clonagem autorizada |
-|---|---|---|---|---|---|
-| `custom` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | L4 | Sim | — | — |
-| `design` | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | L4 | — | Sim | — |
-| `clone` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | L4 | — | — | Sim |
-| `voxcpm2` | `openbmb/VoxCPM2` | L4 | Sim | Sim | Sim |
-| `chatterbox-br` | `ResembleAI/Chatterbox-Multilingual-pt-br` | L4 | Sim | — | Sim |
-| `kokoro` | `hexgrad/Kokoro-82M` | **T4** | Sim | — | — |
-| `higgs3` | `bosonai/higgs-tts-3-4b` | **A100** | Sim (experimental) | — | — |
+| Perfil | GPU padrão | Ambiente e mecanismo | Observação |
+|---|---|---|---|
+| `custom`, `design`, `clone` (Qwen3-TTS) | L4 | Python do Colab (compatível com versão anterior) | Mantidos; Qwen Voice já havia funcionado |
+| `voxcpm2` | L4 | Python 3.11 isolado (`uv`), `voxcpm` | `optimize=False`; falha anterior `TypeError` ainda precisa ser revalidada |
+| `chatterbox-br` | L4 | Python 3.11 isolado; Torch 2.6.0 + torchvision 0.21.0 | Corrige `torchvision::nms`; pesos regionais V3 |
+| `kokoro` | T4 | Python 3.11 isolado; Kokoro/Misaki 0.9.4 | Corrige erro de resolução em Python 3.13 |
+| `higgs3` | **G4** | Python 3.12; vLLM + vLLM-Omni 0.32.0, CUDA 13 | Experimental e pesado; não usa Transformers pipeline genérico |
 
-GPU é recomendação inicial, não teste de VRAM realizado. A GPU pode ser alterada com `--gpu L4` / `--gpu T4` / `--gpu G4`. A100 para Higgs foi escolhida como opção conservadora; L4 é um experimento possível, sem garantia.
+Cada engine fica em um ambiente dedicado para evitar conflitos de Torch/Transformers. O gerenciador `uv` pode baixar o Python correspondente ao inicializar a sessão. Não há armazenamento persistente dos pesos no Drive. O `hf_xet` permanece disponível: `ai-colab hf status`, `ai-colab hf fast` ou `ai-colab hf normal`.
 
-**Somente um modelo por sessão.** Se a VM estiver com Qwen Code ou outra variante Voice ativa, execute `ai-colab stop` antes de trocar. Isso evita descarregar/duplicar modelos sem controle.
+O **Higgs** exige uma GPU com memória muito maior que a dos outros modelos; vLLM-Omni tem duas etapas e pode demorar a carregar. A ferramenta rejeita `--gpu A100` para evitar consumir unidades na A100 comum de 40 GiB; use a G4 padrão. Sua licença é de pesquisa/não comercial, com exceção específica para criadores que atribuem crédito; não use em serviços ou produtos comerciais sem licença apropriada.
 
-### 1) VoxCPM2 — primeiro teste recomendado
+## Sequência de testes recomendada (economizando créditos)
+
+### 1. Kokoro na T4 — teste mais barato
+
+```bash
+ai-colab start voice --voice-model kokoro --gpu T4
+ai-colab test
+ai-colab voice generate \
+  --text "Olá! Esta é uma narração em português brasileiro." \
+  --speaker pf_dora --output ~/Downloads/kokoro-teste.wav
+ai-colab stop
+```
+
+Vozes disponíveis: `pf_dora`, `pm_alex`, `pm_santa`; controle `--speed 0.5` a `2.0`.
+
+### 2. VoxCPM2 na L4
 
 ```bash
 ai-colab start voice --voice-model voxcpm2 --gpu L4
-ai-colab test
-ai-colab voice generate --text "Olá! Esta narração foi criada com o VoxCPM dois." \
-  --style "Voz brasileira suave, clara e natural" \
-  --steps 10 --output ~/Downloads/voxcpm2.wav
-ai-colab voice design --text "Bem-vindo ao nosso canal." \
-  --description "Voz feminina brasileira, serena, dicção clara" \
-  --output ~/Downloads/voxcpm2-design.wav
+ai-colab voice generate \
+  --text "Olá! Estou testando a nova integração de voz." \
+  --style "Voz feminina brasileira, natural, suave e clara" \
+  --steps 10 --output ~/Downloads/voxcpm2-teste.wav
+ai-colab stop
 ```
 
-Para clonar uma voz **com autorização**:
+Para testar clonagem de sua própria voz ou de alguém que consentiu:
 
 ```bash
-ai-colab voice clone --text "Esta é uma gravação gerada com autorização." \
-  --reference ~/Downloads/minha-voz.wav --consent \
+ai-colab voice clone --text "Este áudio foi gerado com autorização." \
+  --reference ~/Downloads/voz-autorizada.wav --consent \
   --output ~/Downloads/voxcpm2-clone.wav
 ```
 
-No VoxCPM2, `--reference-text` é opcional; se fornecido, é empregado no modo de continuação da referência, como previsto no projeto oficial. Use uma gravação sua ou devidamente autorizada.
+Use `clone` **antes de `stop`** na mesma sessão. Com `--reference-text` a API emprega o modo continuação com transcrição, se compatível.
 
-### 2) Chatterbox PT-BR — ajuste regional
+### 3. Chatterbox brasileiro na L4
 
 ```bash
-ai-colab stop
 ai-colab start voice --voice-model chatterbox-br --gpu L4
-ai-colab voice generate --text "Olá, tudo bem? Agora estamos testando a voz brasileira." \
-  --exaggeration 0.5 --temperature 0.8 --cfg-weight 0.5 \
+ai-colab voice generate --text "Bem-vindo! Esta é uma nova experiência de voz." \
+  --exaggeration 0.5 --temperature 0.8 \
   --output ~/Downloads/chatterbox-br.wav
-```
-
-O checkpoint `ResembleAI/Chatterbox-Multilingual-pt-br` **não é autossuficiente**: o worker carrega os componentes compartilhados da versão multilíngue V3 (`ResembleAI/chatterbox`) e aplica estritamente o T3 regional `t3_pt_br.safetensors`. O código não ignora silenciosamente uma incompatibilidade. Ainda não foi comprovado que esse conjunto gera áudio no runtime real.
-
-Caso o modelo reclame de ausência de condicionais padrão, tente uma referência autorizada:
-
-```bash
-ai-colab voice clone --text "A voz brasileira também pode ser personalizada." \
-  --reference ~/Downloads/minha-voz.wav --consent \
-  --output ~/Downloads/chatterbox-ref.wav
-```
-
-Em caso de erro consulte `ai-colab logs --source vllm --lines 100` e interrompa a GPU se desistir.
-
-### 3) Kokoro — rápido e econômico
-
-```bash
 ai-colab stop
-ai-colab start voice --voice-model kokoro --gpu T4
-ai-colab voice generate --text "Bom dia, pessoal!" \
-  --speaker pf_dora --speed 1.0 --output ~/Downloads/kokoro-dora.wav
-ai-colab voice generate --text "Esse teste utiliza outra voz." \
-  --speaker pm_alex --output ~/Downloads/kokoro-alex.wav
 ```
 
-Vozes brasileiras: `pf_dora`, `pm_alex`, `pm_santa`. A engine usa `KPipeline(lang_code='p')` e o `espeak-ng` instalado na VM. Não oferece clonagem ou voice design nesta implementação.
+O modelo baixa os pesos da base `ResembleAI/chatterbox` e o T3 PT-BR separado. Caso a geração sem voz de referência não tenha condicionais disponíveis, envie um trecho de áudio autorizado com `ai-colab voice clone --reference ... --consent`.
 
-### 4) Higgs TTS 3 — experimental e com licença restritiva
+### 4. Higgs experimental na G4 — deixe para depois
 
 ```bash
-ai-colab stop
-ai-colab start voice --voice-model higgs3 --gpu A100
-ai-colab voice generate --text "Olá! Esse é o teste do Higgs TTS três." \
+ai-colab start voice --voice-model higgs3 --gpu G4 --wait 1800
+ai-colab voice generate --text "Olá! Agora estamos testando o Higgs TTS 3." \
   --style calmo --output ~/Downloads/higgs3.wav
+ai-colab stop
 ```
 
-O adaptador inicial usa `transformers.pipeline('text-to-speech', model=...)`, conforme cartão do modelo. **Ainda não há evidência de funcionamento nessa configuração; o servidor pode falhar ao carregar.** A implementação recomendada para produção do fabricante usa SGLang-Omni ou vLLM-Omni, que exigem uma integração própria. Nesta versão, Higgs suporta somente texto→voz e três estilos básicos (`calmo`, `alegre`, `sussurrar`). Não implementei clonagem nem um serviço comercial para ele.
+O Higgs agora inicia **vLLM-Omni** privado em `127.0.0.1:8002`, com uma API local intermediária na porta 8000 e túnel SSH autenticado. O backend pode exigir muitos GB e não foi validado na G4 Blackwell. Se falhar, veja os dois logs abaixo. Clonagem não está implementada no adaptador Higgs.
 
-**Licença:** Boson Research and Non-Commercial. Há uma exceção de uso para criadores de conteúdo com atribuição, mas hospedar serviço/API comercial, incorporar em produto ou revender exige licença separada. Consulte o documento original antes de usar: https://huggingface.co/bosonai/higgs-tts-3-4b/blob/main/LICENSE
-
-## Qwen Voice — continua disponível
+## Diagnóstico sem reiniciar GPU
 
 ```bash
-ai-colab stop
-ai-colab start voice --voice-model custom --gpu L4
-ai-colab voice generate --text "O Qwen continua disponível." \
-  --speaker Ryan --output ~/Downloads/qwen.wav
-
-ai-colab stop
-ai-colab start voice --voice-model design --gpu L4
-ai-colab voice design --text "Olá!" --description "Voz brasileira natural." \
-  --output ~/Downloads/qwen-design.wav
-
-ai-colab stop
-ai-colab start voice --voice-model clone --gpu L4
-ai-colab voice clone --text "Teste autorizado." --reference ~/Downloads/minha-voz.wav \
-  --reference-text "Transcrição literal do áudio enviado." --consent \
-  --output ~/Downloads/qwen-clone.wav
+ai-colab status --remote
+ai-colab stats --usage
+ai-colab logs --source bootstrap --lines 100  # download/pip/uv
+ai-colab logs --source vllm --lines 100       # worker e falhas de inferência
+ai-colab logs --source omni --lines 100       # apenas Higgs
+ai-colab diagnostics
+ai-colab wait --seconds 1800                 # só acompanha uma sessão existente
+ai-colab reconnect                           # restaura apenas SSH
+ai-colab stop                                # libera GPU
 ```
 
-## Programação — mantida
+Se a etapa `colab exec` não responder, a ferramenta tenta detectar remotamente o PID/log do bootstrap. **Não crie imediatamente outra GPU.** Confira `ai-colab status --remote`. Quando decidir encerrar a tentativa, use `ai-colab stop` para liberar unidades.
+
+Na geração, respostas HTTP 500 incluem **tipo e localização** (`arquivo:linha`) da falha, mas não incluem o texto nem a gravação enviada. Isso ajuda a diagnosticar um novo `TypeError` do VoxCPM2 sem registrar conteúdo privado.
+
+## Programação — preservada
 
 ```bash
-ai-colab stop
 ai-colab start code --gpu G4 --context 262144
 ai-colab test
 claude-colab
 ai-colab stop
 ```
 
-`claude-colab` preserva a flag `--dangerously-skip-permissions` solicitada anteriormente (cuidado com alterações locais sem confirmação). `COLAB_AI_SKIP_PERMISSIONS=0 claude-colab` desativa o bypass. O `claude` normal continua usando a configuração Anthropic original.
+O launcher `claude-colab` mantém `--dangerously-skip-permissions`, como solicitado anteriormente; permite operações locais sem confirmação. Para utilizar permissões normais execute `COLAB_AI_SKIP_PERMISSIONS=0 claude-colab`. O comando original `claude` permanece intocado.
 
-## Diagnóstico, monitoramento e custos
+## Segurança, privacidade e limitações
 
-```bash
-ai-colab status --remote
-ai-colab logs --source bootstrap --lines 100   # instalação e download
-ai-colab logs --source vllm --lines 100       # inferência, inclusive Voice
-ai-colab wait --seconds 1800
-ai-colab reconnect                            # apenas túnel SSH
-ai-colab stats --usage
-ai-colab monitor --interval 10
-ai-colab stop                                 # libere a GPU
-```
+- Só uma engine por sessão Colab. Trocar exige `stop` explícito.
+- Arquivos de áudio de referência devem pertencer ao usuário ou ter consentimento verificável; não utilize clonagem para simular terceiros sem autorização.
+- Referências de voz não são registradas em logs de texto; são transmitidas pelo túnel SSH autenticado. Ainda assim, a execução ocorre numa VM em nuvem, sujeita aos termos de privacidade aplicáveis.
+- Limite de entrada: 1.800 caracteres por requisição, 450 no Chatterbox. Arquivos WAV ficam no computador após a geração; arquivos intermediários temporários são apagados.
+- A VM do Colab é temporária, consome unidades enquanto alocada e pode ser encerrada por inatividade. A ferramenta não burla esses limites.
+- Instalar novas versões do vLLM-Omni e dependências em runtime temporário pode levar bastante tempo. Não foi verificada a compatibilidade da G4 com esse backend específico.
 
-- Cada VM é temporária: a primeira execução pode baixar pacotes e pesos novamente.
-- O modo `hf_xet` rápido ajuda em algumas redes, mas não garante downloads mais rápidos.
-- A conexão privada usa SSH + chave local para o proxy remoto em `127.0.0.1`.
-- Áudios de referência (até 4 MB, 0,5–60 s) não são gravados em logs; são mantidos apenas durante a chamada e enviados somente pelo túnel autenticado. Revise as obrigações de privacidade e consentimento antes de usar voz de terceiros.
-- WAVs são gravados atomica e localmente; textos têm limite de 1.800 caracteres por solicitação; o Chatterbox limita 450.
-- O sistema **não** cria GPUs novas automaticamente durante retentativas nem garante proteção contra inatividade do Colab.
+## Fontes oficiais usadas na correção
 
-## Referências verificadas
-
-- VoxCPM2: https://github.com/OpenBMB/VoxCPM e https://huggingface.co/openbmb/VoxCPM2
-- Chatterbox V3/regionais: https://github.com/resemble-ai/chatterbox e https://huggingface.co/ResembleAI/Chatterbox-Multilingual-pt-br
-- Kokoro: https://github.com/hexgrad/kokoro e https://huggingface.co/hexgrad/Kokoro-82M
+- VoxCPM2: https://github.com/OpenBMB/VoxCPM (Python 3.10–3.12; `optimize=False`)
+- Kokoro: https://pypi.org/project/kokoro/0.9.4/ (Python <3.13)
+- Chatterbox: https://github.com/resemble-ai/chatterbox/blob/master/pyproject.toml (Torch 2.6.0)
+- Chatterbox PT-BR: https://huggingface.co/ResembleAI/Chatterbox-Multilingual-pt-br
 - Higgs TTS 3: https://huggingface.co/bosonai/higgs-tts-3-4b
-- Hugging Face Hub: https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
-- Colab CLI: https://github.com/googlecolab/google-colab-cli
+- vLLM-Omni instalação: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
+- Google Colab CLI: https://github.com/googlecolab/google-colab-cli

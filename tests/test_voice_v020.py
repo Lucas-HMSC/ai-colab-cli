@@ -68,7 +68,7 @@ class VoiceV020Tests(unittest.TestCase):
                 args=app.parser_make().parse_args(['start','voice','--voice-model',variant])
                 self.assertEqual(args.voice_model,variant)
         self.assertEqual(app.VOICE_DEFAULT_GPU['kokoro'],'T4')
-        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'A100')
+        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'G4')
         self.assertNotIn('clone',app.VOICE_CAPABILITIES['higgs3'])
         self.assertIn('clone',app.VOICE_CAPABILITIES['voxcpm2'])
 
@@ -102,8 +102,15 @@ class VoiceV020Tests(unittest.TestCase):
 
     def test_higgs_simple_tts(self):
         server,_=fake_voice_api('higgs3')
-        wav=server.synthesize({'text':'Olá!', 'instruct':'calmo'})
+        fake_wav = io.BytesIO()
+        sf.write(fake_wav, np.zeros(2400,dtype=np.float32),24000,format='WAV')
+        response = mock.MagicMock()
+        response.read.return_value = fake_wav.getvalue()
+        response.__enter__.return_value = response
+        with mock.patch.object(server.urllib.request, 'urlopen', return_value=response) as request:
+            wav=server.synthesize({'text':'Olá!', 'instruct':'calmo'})
         self.assertEqual(sf.info(io.BytesIO(wav)).samplerate,24000)
+        self.assertIn('/v1/audio/speech',request.call_args.args[0].full_url)
         with self.assertRaisesRegex(server.UserError, 'não disponível'):
             server.synthesize({'text':'Olá', 'consent':True,'ref_audio_b64':base64.b64encode(b'abc').decode()})
 

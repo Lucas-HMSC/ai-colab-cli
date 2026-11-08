@@ -44,7 +44,7 @@ class CliTests(TestCase):
 
     def test_ssh_tunnel_private_localhost(self):
         with tempfile.TemporaryDirectory() as temp:
-            with mock.patch.object(app, 'STATE_DIR', Path(temp)), mock.patch.object(app,'STATE_FILE',Path(temp)/'state.json'), \
+            with mock.patch.object(app, 'STATE_DIR', Path(temp)), mock.patch.object(app,'STATE_FILE',Path(temp)/'state.json'), mock.patch.object(app, 'LOCK_FILE',Path(temp)/'tunnel.lock'), \
                  mock.patch.object(app,'ensure_key', return_value=Path(temp)/'id_ed25519'), \
                  mock.patch.object(app, 'cli_base', return_value=['/usr/bin/colab','--auth=oauth2']), \
                  mock.patch.object(app.shutil, 'which', return_value='/usr/bin/ssh'), \

@@ -6,6 +6,9 @@ import base64
 import binascii
 import io
 import json
+import traceback
+import urllib.error
+import urllib.request
 import os
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,7 +40,7 @@ if VARIANT in ('custom', 'design', 'clone'):
         MODEL_DIR, device_map='cuda:0', dtype=dtype, attn_implementation='sdpa')
 elif VARIANT == 'voxcpm2':
     from voxcpm import VoxCPM
-    MODEL_OBJ = VoxCPM.from_pretrained(MODEL_DIR, load_denoiser=False)
+    MODEL_OBJ = VoxCPM.from_pretrained(MODEL_DIR, load_denoiser=False, optimize=False)
 elif VARIANT == 'kokoro':
     from kokoro import KPipeline
     MODEL_OBJ = KPipeline(lang_code='p', device='cuda')
@@ -55,12 +58,10 @@ elif VARIANT == 'chatterbox-br':
     MODEL_OBJ.t3.eval()
     print('Pesos PT-BR t3_pt_br.safetensors aplicados à base Chatterbox V3.', flush=True)
 elif VARIANT == 'higgs3':
-    # Integração experimental. A implementação oficial prioriza SGLang-Omni;
-    # Transformers pode exigir versão/pipeline específicos no runtime Colab.
-    import torch
-    from transformers import pipeline
-    MODEL_OBJ = pipeline('text-to-speech', model=MODEL_DIR, device=0,
-                         trust_remote_code=True)
+    # Higgs TTS 3 NÃO é um pipeline Transformers genérico.
+    # O bootstrap inicia vLLM-Omni (porta privada 8002); este worker faz proxy
+    # dos pedidos de geração e mantém a autenticação no proxy da CLI.
+    MODEL_OBJ = None
 else:
     raise RuntimeError('Perfil Voice desconhecido: ' + VARIANT)
 print(f'Voice pronto: {MODEL} | perfil={VARIANT}', flush=True)
@@ -195,21 +196,33 @@ def synthesize(data: dict) -> bytes:
             wav = np.concatenate(chunks)
             sr = 24000
         elif VARIANT == 'higgs3':
-            # Pipeline Transformers experimental; só o fluxo TTS simples.
             if ref_audio is not None:
-                raise UserError('Clonagem Higgs não disponível neste backend experimental')
+                raise UserError('Clonagem Higgs ainda não implementada nesta interface')
             style = str(data.get('instruct', '') or '').strip()
             if style:
-                # Tokens de controle documentados pela Boson; somente tokens conhecidos.
                 allowed = {'sussurrar': '<|style:whispering|>',
                            'alegre': '<|emotion:enthusiasm|>',
                            'calmo': '<|emotion:contentment|>'}
                 text = allowed.get(style.lower(), '') + text
-            result = MODEL_OBJ(text)
-            if not isinstance(result, dict) or 'audio' not in result:
-                raise RuntimeError('Resposta Transformers Higgs não contém áudio; consulte log do worker')
-            wav = np.asarray(result['audio'], dtype=np.float32).squeeze()
-            sr = int(result.get('sampling_rate', 24000))
+            req = urllib.request.Request(
+                'http://127.0.0.1:8002/v1/audio/speech',
+                data=json.dumps({'model': MODEL, 'input': text}).encode('utf-8'),
+                headers={'Content-Type': 'application/json'}, method='POST')
+            try:
+                with urllib.request.urlopen(req, timeout=600) as response:
+                    raw_wav = response.read(40 * 1024 * 1024 + 1)
+                if len(raw_wav) > 40 * 1024 * 1024:
+                    raise UserError('Higgs retornou áudio maior que 40 MB')
+                # Verifica a resposta real de vLLM-Omni antes de devolver WAV.
+                with sf.SoundFile(io.BytesIO(raw_wav)) as f:
+                    sr = f.samplerate
+                    wav = f.read(dtype='float32', always_2d=False)
+                if wav.ndim == 2:
+                    wav = wav.mean(axis=1)
+                wav = np.asarray(wav, dtype=np.float32)
+            except urllib.error.HTTPError as error:
+                # Não registrar resposta upstream, que poderia incluir texto do usuário.
+                raise RuntimeError(f'vLLM-Omni respondeu HTTP {error.code}') from error
         else:
             raise RuntimeError('Perfil Voice não implementado: ' + VARIANT)
 
@@ -233,6 +246,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
+            if VARIANT == 'higgs3':
+                try:
+                    with urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=.8) as upstream:
+                        if upstream.status != 200:
+                            return self.reply(503, b'{"status":"loading"}')
+                except (OSError, urllib.error.HTTPError):
+                    return self.reply(503, b'{"status":"loading"}')
             return self.reply(200, b'{"status":"ok"}')
         if self.path == '/v1/models':
             body = json.dumps({'object':'list','data':[{'id':MODEL,'object':'model'}]}).encode()
@@ -254,9 +274,14 @@ class Handler(BaseHTTPRequestHandler):
         except (UserError, json.JSONDecodeError) as err:
             self.reply(400, json.dumps({'error': str(err)}).encode())
         except Exception as err:
-            # Nunca registrar texto de entrada ou referência de voz.
-            print('Falha inferência ' + VARIANT + ': ' + type(err).__name__ + ': ' + str(err)[:400], flush=True)
-            self.reply(500, json.dumps({'error': 'Falha inferência: ' + type(err).__name__}).encode())
+            # Logar tipo e localização da exceção, sem prompts, áudio ou texto
+            # livre do erro (que pode conter partes da entrada do usuário).
+            tb = traceback.extract_tb(err.__traceback__)
+            loc = (tb[-1].filename.rsplit('/', 1)[-1] + ':' + str(tb[-1].lineno)) if tb else 'desconhecido'
+            print('Falha inferência ' + VARIANT + ': ' + type(err).__name__ + ' em ' + loc, flush=True)
+            payload = {'error': 'Falha inferência: ' + type(err).__name__,
+                       'location': loc, 'hint': 'ai-colab logs --source vllm --lines 80'}
+            self.reply(500, json.dumps(payload).encode())
 
     def log_message(self, *args):
         pass

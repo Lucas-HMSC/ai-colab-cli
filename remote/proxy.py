@@ -89,6 +89,20 @@ def vllm_status(include_metrics=False):
     except (OSError, ValueError):
         pid = None
     alive = process_alive(pid)
+    omni_log_tail = ""
+    if VOICE_MODE and CONF.get('voice_variant') == 'higgs3':
+        omni_file = Path('/content/colab-ai-voice-omni.pid')
+        try:
+            omni_pid = int(omni_file.read_text().strip())
+            omni_alive = process_alive(omni_pid)
+        except (OSError, ValueError):
+            omni_alive = None
+        if omni_alive is False:
+            alive = False  # expor falha real do backend, não apenas worker HTTP ativo
+        try:
+            omni_log_tail = Path('/content/colab-ai-voice-omni.log').read_text(errors='replace')[-2000:]
+        except OSError:
+            pass
     ready = False
     try:
         with urlopen("http://127.0.0.1:8000/health", timeout=0.8) as resp:
@@ -135,6 +149,8 @@ def vllm_status(include_metrics=False):
         phase = "inicializando / carregando pesos"
     else:
         phase = "inicialização em andamento" if alive else "processo ainda não detectado"
+    if omni_log_tail and alive is False:
+        log_tail = (log_tail + "\n--- Higgs Omni ---\n" + omni_log_tail)[-3500:]
     status = {"vllm_pid": pid, "vllm_alive": alive, "vllm_ready": ready,
               "phase": phase, "log_bytes": log_bytes, "log_tail": log_tail,
               "bootstrap_pid": bootstrap_pid, "bootstrap_alive": bootstrap_alive,

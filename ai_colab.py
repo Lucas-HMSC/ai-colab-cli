@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -71,9 +71,9 @@ VOICE_MODELS = {
     "higgs3": "bosonai/higgs-tts-3-4b",
 }
 VOICE_DEFAULT_GPU = {"custom": "L4", "design": "L4", "clone": "L4",
-                     "voxcpm2": "L4", "chatterbox-br": "L4", "kokoro": "T4", "higgs3": "A100"}
+                     "voxcpm2": "L4", "chatterbox-br": "L4", "kokoro": "T4", "higgs3": "G4"}
 VOICE_MIN_GIB = {"custom": 10, "design": 10, "clone": 10,
-                 "voxcpm2": 10, "chatterbox-br": 10, "kokoro": 5, "higgs3": 18}
+                 "voxcpm2": 10, "chatterbox-br": 10, "kokoro": 5, "higgs3": 70}
 VOICE_CAPABILITIES = {
     "custom": {"generate"}, "design": {"design"}, "clone": {"clone"},
     "voxcpm2": {"generate", "design", "clone"},
@@ -83,7 +83,7 @@ VOICE_CAPABILITIES = {
 VOICE_NOTES = {"voxcpm2": "Design e clonagem; Apache-2.0",
                "chatterbox-br": "PT-BR com pesos regionais sobre V3; MIT",
                "kokoro": "82M, vozes brasileiras; Apache-2.0",
-               "higgs3": "EXPERIMENTAL; licença não comercial/creator grant com atribuição"}
+               "higgs3": "EXPERIMENTAL (vLLM-Omni), GPU G4/H100; licença Research/Creator Grant"}
 SPEAKERS = ("Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee")
 
 
@@ -588,6 +588,9 @@ def do_start(args) -> None:
         raise RuntimeError(f"Modalidade desconhecida: {mode}")
     if mode == "voice":
         if args.voice_model == "higgs3":
+            if args.gpu == "A100":
+                raise RuntimeError("Higgs TTS 3 requer preferencialmente G4/H100 (~80 GiB ou mais). "
+                                   "A100 padrão costuma ter 40 GiB; selecione --gpu G4 antes de iniciar a VM.")
             print("ATENÇÃO: Higgs TTS 3 é experimental e usa licença Boson Research/Non-Commercial. "
                   "Uso como serviço ou produto comercial exige outra licença. "
                   "Conteúdo de criadores pode exigir atribuição; consulte a licença oficial.")
@@ -689,19 +692,34 @@ def do_start(args) -> None:
         run(base + ["upload", "-s", state["session"],
                     str(ROOT / "remote/voice_api.py"), VOICE_API_REMOTE], quiet=True)
     print("Iniciando preparação remota em segundo plano (sem bloquear o kernel)...", flush=True)
-    # colab exec tem timeout padrão curto. Esse pequeno script só inicia o
-    # processo de preparação e retorna. O download de pesos NÃO roda neste exec.
+    # O kernel da Colab CLI pode não devolver execute_reply mesmo após disparar
+    # o bootstrap. Antes de declarar falha, confirmar o efeito remoto por
+    # download de PID/log; não criar outra VM nem dar duas partidas no modelo.
+    def remote_launch_observed() -> bool:
+        with tempfile.TemporaryDirectory(prefix='colab-ai-probe-') as folder:
+            for filename in ('/content/colab-ai-bootstrap.pid', '/content/colab-ai-bootstrap.log'):
+                local = Path(folder) / Path(filename).name
+                try:
+                    result = run(base + ['download', '-s', state['session'], filename, str(local)],
+                                 check=False, timeout=45, quiet=True)
+                    if result.returncode == 0 and local.exists():
+                        return True
+                except subprocess.TimeoutExpired:
+                    pass
+        return False
     try:
         run(base + ["exec", "-s", state["session"], "--timeout", "180",
                     "-f", str(ROOT / "remote/launch.py")], timeout=240)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("O comando curto de lançamento remoto não respondeu. "
-                           "Não inicialize outra GPU: confira ai-colab status --remote "
-                           "e ai-colab logs --source bootstrap. "
-                           "A sessão existente pode continuar funcionando.") from exc
-    except RuntimeError as exc:
-        raise RuntimeError(f"Lançamento remoto falhou: {exc}\n"
-                           "A GPU continua ativa. Investigue antes de reiniciar.") from exc
+    except (subprocess.TimeoutExpired, RuntimeError) as exc:
+        print("Lançamento remoto não respondeu; verificando se o bootstrap já começou...", flush=True)
+        if remote_launch_observed():
+            print("Bootstrap detectado na VM. Continuando sem repetir a partida.", flush=True)
+        else:
+            raise RuntimeError("Não foi possível confirmar o lançamento remoto. "
+                               "Não inicialize outra GPU: confira ai-colab status --remote e ai-colab logs --source bootstrap; "
+                               "se a VM ainda estiver ativa, tente ai-colab start voice "
+                               "(ou start code) novamente, preservando a sessão. "
+                               "Ao desistir, execute ai-colab stop.") from exc
     if not pid_running(state.get("serve_pid")):
         # Este exec executa um servidor HTTP real no kernel; o prazo é maior
         # que a duração típica de uma sessão de programação (2 h).
@@ -858,7 +876,10 @@ def do_logs(args):
     if not remote_session_exists(base, state["session"]):
         raise RuntimeError("A sessão Colab não está ativa. Logs da VM encerrada não ficam disponíveis.")
     filename = {"vllm": "/content/colab-ai-voice.log" if state.get("mode") == "voice" else "/content/colab-ai-vllm.log",
-                "bootstrap": "/content/colab-ai-bootstrap.log"}[args.source]
+                "bootstrap": "/content/colab-ai-bootstrap.log",
+                "omni": "/content/colab-ai-voice-omni.log"}[args.source]
+    if args.source == 'omni' and state.get('voice_variant') != 'higgs3':
+        raise RuntimeError('Log Omni disponível apenas no perfil Higgs TTS 3')
     with tempfile.TemporaryDirectory(prefix="colab-ai-log-") as temp:
         local_path = Path(temp) / Path(filename).name
         cmd = base + ["download", "-s", state["session"], filename, str(local_path)]
@@ -876,7 +897,7 @@ def do_test(args):
     if not state:
         raise RuntimeError("Sem sessão. Execute ai-colab start code ou start voice primeiro.")
     if state.get("mode") == "voice":
-        voice_args = argparse.Namespace(action="generate", text="Olá! Este é um teste de voz do Qwen no Colab.",
+        voice_args = argparse.Namespace(action="generate", text="Olá! Teste de geração de voz no Colab.",
             file=None, output=str(STATE_DIR / "voice-test.wav"), language="Portuguese",
             speaker="Ryan", style="Fale de maneira natural e acolhedora.", description=None,
             reference=None, reference_text=None, consent=False, timeout=args.timeout)
@@ -1053,8 +1074,8 @@ def parser_make():
     sub.add_parser("diagnostics", help="Logs locais + estado remoto").set_defaults(func=do_diagnostics)
     a = sub.add_parser("logs", help="Últimas linhas do servidor do modelo")
     a.add_argument("--lines", type=int, default=80)
-    a.add_argument("--source", choices=["vllm", "bootstrap"], default="vllm",
-                   help="vllm/voice (padrão) ou bootstrap (instalação/download)")
+    a.add_argument("--source", choices=["vllm", "bootstrap", "omni"], default="vllm",
+                   help="vllm/voice, bootstrap (instalação) ou omni (backend Higgs)")
     a.set_defaults(func=do_logs)
     a = sub.add_parser("test", help="Executa geração real pela API")
     a.add_argument("--timeout", type=int, default=180)
