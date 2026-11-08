@@ -20,7 +20,7 @@ from test_voice_v020 import fake_voice_api
 
 class RuntimeCompatibilityTests(unittest.TestCase):
     def test_registry_preserves_code_and_qwen(self):
-        self.assertEqual(app.VERSION, '0.2.4')
+        self.assertEqual(app.VERSION, '0.2.6')
         self.assertEqual(app.PROFILES['code']['model'],'Qwen/Qwen3.8-27B-FP8')
         self.assertIn('262144',str(app.parser_make().parse_args(['start','code','--context','262144'])))
         for q in ('custom','design','clone'):
@@ -37,12 +37,9 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         self.assertIn("'optimize=False'".strip("'"), (ROOT/'remote/voice_api.py').read_text())
 
     def test_higgs_preflight_blocks_undersized_a100_before_gpu(self):
-        args=app.parser_make().parse_args(['start','voice','--voice-model','higgs3','--gpu','A100'])
-        with mock.patch.object(app,'ensure_key') as ssh, mock.patch.object(app,'run') as run:
-            with self.assertRaisesRegex(RuntimeError,'A100 padrão'):
-                app.do_start(args)
-            ssh.assert_not_called()
-            run.assert_not_called()
+        self.assertNotIn('higgs3', app.ACTIVE_VOICE_MODELS)
+        with self.assertRaises(SystemExit):
+            app.parser_make().parse_args(['start','voice','--voice-model','higgs3','--gpu','A100'])
 
     def test_higgs_default_gpu_and_privacy(self):
         self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'H100')

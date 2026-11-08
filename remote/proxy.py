@@ -22,6 +22,7 @@ ROUTES = {
     ("POST", "/v1/completions"),
     ("POST", "/v1/responses"),
     ("POST", "/_colab_ai/voice/generate"),
+    ("POST", "/_colab_ai/transcribe"),
 }
 
 
@@ -30,8 +31,11 @@ try:
 except (FileNotFoundError, ValueError):
     CONF = {}  # testabilidade local; em produção o arquivo é obrigatório em serve.py
 VOICE_MODE = CONF.get("mode") == "voice"
-PID_FILE = Path("/content/colab-ai-voice.pid" if VOICE_MODE else "/content/colab-ai-vllm.pid")
-LOG_FILE = Path("/content/colab-ai-voice.log" if VOICE_MODE else "/content/colab-ai-vllm.log")
+ASR_MODE = CONF.get("mode") == "transcribe"
+PID_FILE = Path("/content/colab-ai-voice.pid" if VOICE_MODE else
+                "/content/colab-ai-asr.pid" if ASR_MODE else "/content/colab-ai-vllm.pid")
+LOG_FILE = Path("/content/colab-ai-voice.log" if VOICE_MODE else
+                "/content/colab-ai-asr.log" if ASR_MODE else "/content/colab-ai-vllm.log")
 BOOT_FILE = Path("/content/colab-ai-bootstrap.log")
 BOOT_PID_FILE = Path("/content/colab-ai-bootstrap.pid")
 
@@ -156,7 +160,7 @@ def vllm_status(include_metrics=False):
               "omni_alive": omni_alive if VOICE_MODE and CONF.get('voice_variant') == 'higgs3' else None,
               "phase": phase, "log_bytes": log_bytes, "log_tail": log_tail,
               "bootstrap_pid": bootstrap_pid, "bootstrap_alive": bootstrap_alive,
-              "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "code"}
+              "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "transcribe" if ASR_MODE else "code"}
     if include_metrics:
         status["metrics"] = collect_metrics()
     return status
@@ -196,6 +200,60 @@ def make_handler(api_key):
                 return
             if parsed.path == "/_colab_ai/voice/generate" and not VOICE_MODE:
                 self.send_error(404, "Voice não iniciado nesta sessão")
+                return
+            if parsed.path == "/_colab_ai/transcribe" and not ASR_MODE:
+                self.send_error(404, "Transcribe não iniciado nesta sessão")
+                return
+            # Encaminha arquivos ASR por streaming para não manter 150 MiB de
+            # áudio na RAM do proxy. A chave do cliente jamais vai ao worker.
+            if parsed.path == "/_colab_ai/transcribe":
+                try:
+                    size = int(self.headers.get("Content-Length", "-1"))
+                except ValueError:
+                    size = -1
+                if not 0 < size <= 150 * 1024 * 1024:
+                    self.send_error(413, "Áudio deve ter até 150 MiB")
+                    return
+                upstream = http.client.HTTPConnection("127.0.0.1", 8000, timeout=3600)
+                started = False
+                try:
+                    upstream.putrequest("POST", parsed.path)
+                    upstream.putheader("Content-Type", "application/octet-stream")
+                    upstream.putheader("Content-Length", str(size))
+                    upstream.putheader("X-Colab-Ai-Extension", self.headers.get("X-Colab-Ai-Extension", ""))
+                    upstream.putheader("X-Colab-Ai-Language", self.headers.get("X-Colab-Ai-Language", "pt"))
+                    upstream.endheaders()
+                    remaining = size
+                    while remaining:
+                        block = self.rfile.read(min(65536, remaining))
+                        if not block:
+                            raise ConnectionError("Upload interrompido")
+                        upstream.send(block)
+                        remaining -= len(block)
+                    response = upstream.getresponse()
+                    self.send_response(response.status)
+                    self.send_header("Content-Type", response.getheader("Content-Type", "application/json"))
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    started = True
+                    while True:
+                        chunk = response.read1(65536)
+                        if not chunk: break
+                        self.wfile.write(f"{len(chunk):X}\r\n".encode())
+                        self.wfile.write(chunk + b"\r\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                except Exception as exc:
+                    if not started:
+                        self.send_error(502, "ASR indisponível: " + type(exc).__name__)
+                    else:
+                        self.close_connection = True
+                finally:
+                    upstream.close()
                 return
             data = None
             if self.command == "POST":

@@ -75,14 +75,14 @@ def fake_voice_api(variant):
 
 class VoiceV020Tests(unittest.TestCase):
     def test_model_registry_gpu_and_capabilities(self):
-        for variant in ('voxcpm2','chatterbox-br','kokoro','higgs3'):
+        for variant in ('voxcpm2','chatterbox-br','kokoro'):
             with self.subTest(variant=variant):
                 self.assertIn(variant, app.VOICE_MODELS)
                 self.assertIn(variant, app.VOICE_DEFAULT_GPU)
                 args=app.parser_make().parse_args(['start','voice','--voice-model',variant])
                 self.assertEqual(args.voice_model,variant)
         self.assertEqual(app.VOICE_DEFAULT_GPU['kokoro'],'T4')
-        self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'H100')
+        self.assertNotIn('higgs3', app.ACTIVE_VOICE_MODELS)
         self.assertNotIn('clone',app.VOICE_CAPABILITIES['higgs3'])
         self.assertIn('clone',app.VOICE_CAPABILITIES['voxcpm2'])
 

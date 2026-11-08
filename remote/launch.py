@@ -12,10 +12,14 @@ from urllib.request import urlopen
 
 CONF = json.loads(Path("/content/colab-ai-config.json").read_text())
 VOICE = CONF.get("mode") == "voice"
-BOOTSTRAP = Path("/content/colab-ai-voice-bootstrap.py" if VOICE else "/content/colab-ai-bootstrap.py")
+ASR = CONF.get("mode") == "transcribe"
+BOOTSTRAP = Path("/content/colab-ai-voice-bootstrap.py" if VOICE else
+                 "/content/colab-ai-transcribe-bootstrap.py" if ASR else
+                 "/content/colab-ai-bootstrap.py")
 BOOT_LOG = Path("/content/colab-ai-bootstrap.log")
 BOOT_PID = Path("/content/colab-ai-bootstrap.pid")
-VLLM_PID = Path("/content/colab-ai-voice.pid" if VOICE else "/content/colab-ai-vllm.pid")
+VLLM_PID = Path("/content/colab-ai-voice.pid" if VOICE else
+                "/content/colab-ai-asr.pid" if ASR else "/content/colab-ai-vllm.pid")
 
 
 def alive(path, marker):
@@ -36,7 +40,7 @@ try:
 except OSError:
     ready = False
 
-if ready or alive(VLLM_PID, "colab-ai-voice-api.py" if VOICE else "vllm"):
+if ready or alive(VLLM_PID, "colab-ai-voice-api.py" if VOICE else "colab-ai-transcribe-api.py" if ASR else "vllm"):
     print("Servidor do modelo já está ativo/inicializando; não foi criado outro processo.", flush=True)
 elif alive(BOOT_PID, str(BOOTSTRAP)):
     print("Preparação remota já em andamento; evitando instalação duplicada.", flush=True)

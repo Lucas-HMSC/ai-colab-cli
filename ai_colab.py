@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.2.4"
+VERSION = "0.2.6"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -33,6 +33,8 @@ PREFS_FILE = STATE_DIR / "preferences.json"
 LOCK_FILE = STATE_DIR / "tunnel.lock"
 VOICE_BOOTSTRAP_REMOTE = "/content/colab-ai-voice-bootstrap.py"
 VOICE_API_REMOTE = "/content/colab-ai-voice-api.py"
+ASR_BOOTSTRAP_REMOTE = "/content/colab-ai-transcribe-bootstrap.py"
+ASR_API_REMOTE = "/content/colab-ai-transcribe-api.py"
 
 SESSION = "colab-ai-code"
 REMOTE_CONFIG = "/content/colab-ai-config.json"
@@ -58,7 +60,18 @@ PROFILES = {
 COMING = {
     "image": "Geração e edição de imagens (planejada)",
     "video": "Geração de vídeos (planejada)",
-    "transcribe": "Transcrição de áudio / ASR (planejada)",
+}
+
+# Duas engines ASR PT-BR isoladas por Python 3.12, sem cache no Drive.
+ASR_MODELS = {
+    "whisper": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "qwen": "Qwen/Qwen3-ASR-1.7B",
+}
+ASR_DEFAULT_GPU = {"whisper": "T4", "qwen": "L4"}
+ASR_MIN_GIB = {"whisper": 7, "qwen": 12}
+ASR_NOTES = {
+    "whisper": "faster-whisper, legendas por segmentos, PT-BR",
+    "qwen": "Qwen3-ASR + ForcedAligner-0.6B, legendas com tempos reais",
 }
 
 VOICE_MODELS = {
@@ -84,6 +97,11 @@ VOICE_NOTES = {"voxcpm2": "Design e clonagem; Apache-2.0",
                "chatterbox-br": "PT-BR com pesos regionais sobre V3; MIT",
                "kokoro": "82M, vozes brasileiras; Apache-2.0",
                "higgs3": "EXPERIMENTAL: H100 é a GPU da receita oficial; G4 não validada; licença Research/Creator Grant"}
+# O backend Higgs fica arquivado apenas para possível restauração futura.
+# Ele NÃO aparece no catálogo nem pode ser selecionado pelo usuário.
+HIDDEN_VOICE_MODELS = frozenset({"higgs3"})
+ACTIVE_VOICE_MODELS = {name: repo for name, repo in VOICE_MODELS.items() if name not in HIDDEN_VOICE_MODELS}
+
 SPEAKERS = ("Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee")
 
 
@@ -496,7 +514,7 @@ def wait_ready(state: dict, seconds: int = 900, *, interval: float = 5) -> None:
             if time.monotonic() - last_report >= 30:
                 elapsed = time.monotonic()-begun
                 print(f"[{elapsed:.0f}s] Aguardando proxy/túnel: {snapshot}", flush=True)
-                if elapsed > 120 and state.get('mode') == 'voice':
+                if elapsed > 120 and state.get('mode') in ('voice', 'transcribe'):
                     print("Se persistir, examine sem reiniciar a GPU: "
                           "ai-colab logs --source bootstrap --lines 80; "
                           "ai-colab status --remote; ai-colab diagnostics", flush=True)
@@ -572,7 +590,7 @@ def do_wait(args):
     """Retoma SOMENTE a espera de uma sessão existente; nunca cria GPU."""
     state = state_read()
     if not state:
-        raise RuntimeError("Nenhuma sessão registrada. Execute ai-colab start voice ou ai-colab start code.")
+        raise RuntimeError("Nenhuma sessão registrada. Execute ai-colab start code/voice/transcribe.")
     base = cli_base(state["auth"])
     if not remote_session_exists(base, state["session"]):
         raise RuntimeError("A GPU foi encerrada. 'wait' não cria nova VM. Use ai-colab start voice ou ai-colab start code.")
@@ -589,9 +607,11 @@ def do_start(args) -> None:
     if mode in COMING:
         print(f"{COMING[mode]}. A ferramenta NÃO criará uma GPU para esse modo ainda.")
         return
-    if mode not in PROFILES and mode != "voice":
+    if mode not in PROFILES and mode not in ("voice", "transcribe"):
         raise RuntimeError(f"Modalidade desconhecida: {mode}")
     if mode == "voice":
+        if args.voice_model not in ACTIVE_VOICE_MODELS:
+            raise RuntimeError(f"Modelo de voz desativado ou desconhecido: {args.voice_model}")
         if args.voice_model == "higgs3":
             if args.gpu == "A100":
                 raise RuntimeError("Higgs TTS 3: A100 padrão 40 GiB não é a GPU validada na receita oficial. "
@@ -607,6 +627,15 @@ def do_start(args) -> None:
         profile = {"mode": "voice", "model": VOICE_MODELS[args.voice_model],
                    "context": 0, "min_gib": VOICE_MIN_GIB[args.voice_model], "gpu_util": None, "tool_parser": None,
                    "reasoning_parser": None, "effort": None, "voice_variant": args.voice_model}
+    elif mode == "transcribe":
+        if args.asr_model not in ASR_MODELS:
+            raise RuntimeError(f"Modelo ASR desconhecido: {args.asr_model}")
+        if args.context is not None:
+            raise RuntimeError("--context é exclusivo da programação; transcrição não usa contexto do vLLM")
+        profile = {"mode": "transcribe", "model": ASR_MODELS[args.asr_model],
+                   "context": 0, "min_gib": ASR_MIN_GIB[args.asr_model], "gpu_util": None,
+                   "tool_parser": None, "reasoning_parser": None, "effort": None,
+                   "asr_variant": args.asr_model}
     else:
         profile = dict(PROFILES[mode]); profile["mode"] = mode
         if args.context:
@@ -615,7 +644,7 @@ def do_start(args) -> None:
     if state and (state.get("mode") != mode or state.get("model") != profile["model"]):
         raise RuntimeError(f"Sessão '{state.get('mode')}' / modelo '{state.get('model')}' registrada. "
                            "Use 'ai-colab stop' antes de trocar de modelo ou variante.")
-    if state and mode != "voice" and state.get("context") != profile["context"]:
+    if state and mode in PROFILES and state.get("context") != profile["context"]:
         if args.context is not None:
             raise RuntimeError("Há uma sessão com outro contexto; encerre com ai-colab stop antes de alterar.")
         # Sessões já abertas podem ter o contexto anterior de 65K.
@@ -627,7 +656,9 @@ def do_start(args) -> None:
         ok, msg = local_api(state, timeout=3)
         if ok:
             watchdog_start(state)
-            print(f"Já ativa: {msg}. " + ("Use ai-colab voice generate --help" if mode == "voice" else "Use claude-colab para programar."))
+            print(f"Já ativa: {msg}. " + ("Use ai-colab voice generate --help" if mode == "voice" else
+                                                "Use ai-colab transcribe --help" if mode == "transcribe" else
+                                                "Use claude-colab para programar."))
             return
     # Verifica requisitos antes de provisionar a GPU.
     ensure_key()
@@ -635,15 +666,17 @@ def do_start(args) -> None:
         raise RuntimeError("OpenSSH não encontrado. Instale openssh-client antes de iniciar a GPU.")
     if not (1024 <= args.port <= 65535):
         raise RuntimeError("Porta local deve estar entre 1024 e 65535.")
-    if mode != "voice" and profile["context"] < 1024:
+    if mode in PROFILES and profile["context"] < 1024:
         raise RuntimeError("Contexto inválido (mínimo 1024).")
     if not state:
         state = {"mode": mode, "model": profile["model"], "session": args.session,
-                 "auth": args.auth, "gpu": (args.gpu or (VOICE_DEFAULT_GPU[args.voice_model] if mode == "voice" else "G4")), "port": args.port,
+                 "auth": args.auth, "gpu": (args.gpu or (VOICE_DEFAULT_GPU[args.voice_model] if mode == "voice" else
+                                          ASR_DEFAULT_GPU[args.asr_model] if mode == "transcribe" else "G4")), "port": args.port,
                  "token": secrets.token_urlsafe(36), "context": profile["context"],
                  "tunnel_pid": None, "serve_pid": None,
                  "watchdog_pid": None, "hf_mode": (args.hf_mode or preferences_read()["hf_mode"]),
-                 "voice_variant": profile.get("voice_variant")}
+                 "voice_variant": profile.get("voice_variant"),
+                 "asr_variant": profile.get("asr_variant")}
         state_write(state)
     base = cli_base(state["auth"])
     # `status -s` pode terminar com RC=0 MESMO com "Session not found".
@@ -652,7 +685,7 @@ def do_start(args) -> None:
     if not exists:
         # Uma VM antiga sumiu: se o usuário não especificou --context,
         # aplicar o novo padrão da versão instalada na próxima sessão.
-        if mode != "voice" and args.context is None and state.get("context") != PROFILES[mode]["context"]:
+        if mode in PROFILES and args.context is None and state.get("context") != PROFILES[mode]["context"]:
             state["context"] = PROFILES[mode]["context"]
             profile["context"] = state["context"]
             print(f"Nova sessão: contexto padrão atualizado para {state['context']} tokens.")
@@ -686,6 +719,7 @@ def do_start(args) -> None:
                "min_gib": profile["min_gib"], "gpu_util": profile["gpu_util"],
                "tool_parser": profile["tool_parser"], "reasoning_parser": profile["reasoning_parser"],
                "key": state["token"], "mode": mode, "voice_variant": profile.get("voice_variant"),
+               "asr_variant": profile.get("asr_variant"),
                "hf_mode": state.get("hf_mode", "fast")}
     config_file = STATE_DIR / "remote-config.json"
     config_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -699,6 +733,11 @@ def do_start(args) -> None:
                     str(ROOT / "remote/voice_bootstrap.py"), VOICE_BOOTSTRAP_REMOTE], quiet=True)
         run(base + ["upload", "-s", state["session"],
                     str(ROOT / "remote/voice_api.py"), VOICE_API_REMOTE], quiet=True)
+    elif mode == "transcribe":
+        run(base + ["upload", "-s", state["session"],
+                    str(ROOT / "remote/transcribe_bootstrap.py"), ASR_BOOTSTRAP_REMOTE], quiet=True)
+        run(base + ["upload", "-s", state["session"],
+                    str(ROOT / "remote/transcribe_api.py"), ASR_API_REMOTE], quiet=True)
     print("Iniciando preparação remota em segundo plano (sem bloquear o kernel)...", flush=True)
     # O kernel da Colab CLI pode não devolver execute_reply mesmo após disparar
     # o bootstrap. Antes de declarar falha, confirmar o efeito remoto por
@@ -725,8 +764,8 @@ def do_start(args) -> None:
         else:
             raise RuntimeError("Não foi possível confirmar o lançamento remoto. "
                                "Não inicialize outra GPU: confira ai-colab status --remote e ai-colab logs --source bootstrap; "
-                               "se a VM ainda estiver ativa, tente ai-colab start voice "
-                               "(ou start code) novamente, preservando a sessão. "
+                               "se a VM ainda estiver ativa, tente ai-colab start "
+                               "novamente com o mesmo perfil, preservando a sessão. "
                                "Ao desistir, execute ai-colab stop.") from exc
     if not pid_running(state.get("serve_pid")):
         # Este exec executa um servidor HTTP real no kernel; o prazo é maior
@@ -739,7 +778,10 @@ def do_start(args) -> None:
     state = tunnel_start(state)
     watchdog_start(state)
     wait_ready(state, args.wait)
-    print("\nPronto! Execute: " + ("ai-colab voice generate --text \"Olá, mundo!\" --output teste.wav" if mode == "voice" else "claude-colab  (ou ai-colab claude)"))
+    print("\nPronto! Execute: " + (
+        "ai-colab voice generate --text \"Olá, mundo!\" --output teste.wav" if mode == "voice" else
+        "ai-colab transcribe --file audio.mp3 --output transcricao.txt" if mode == "transcribe" else
+        "claude-colab  (ou ai-colab claude)"))
 
 
 def do_stop(args) -> None:
@@ -794,7 +836,7 @@ def do_status(args) -> None:
 def do_reconnect(args):
     state = state_read()
     if not state:
-        raise RuntimeError("Nenhuma sessão. Execute ai-colab start voice ou ai-colab start code.")
+        raise RuntimeError("Nenhuma sessão. Execute ai-colab start code/voice/transcribe.")
     state = tunnel_start(state, force=True)
     watchdog_start(state)
     good, detail = local_api(state, timeout=8)
@@ -808,8 +850,8 @@ def do_claude(args):
     state = state_read()
     if not state:
         raise RuntimeError("GPU não iniciada. Execute: ai-colab start code")
-    if state.get("mode") == "voice":
-        raise RuntimeError("Sessão Voice ativa. Claude Code exige um perfil de programação; use stop/start code")
+    if state.get("mode") in ("voice", "transcribe"):
+        raise RuntimeError("Sessão de áudio ativa. Claude Code exige Code: use stop/start code")
     good, detail = local_api(state, timeout=3)
     if not good:
         do_reconnect(args)
@@ -883,7 +925,9 @@ def do_logs(args):
     base = cli_base(state["auth"])
     if not remote_session_exists(base, state["session"]):
         raise RuntimeError("A sessão Colab não está ativa. Logs da VM encerrada não ficam disponíveis.")
-    filename = {"vllm": "/content/colab-ai-voice.log" if state.get("mode") == "voice" else "/content/colab-ai-vllm.log",
+    filename = {"vllm": "/content/colab-ai-voice.log" if state.get("mode") == "voice" else
+                        "/content/colab-ai-asr.log" if state.get("mode") == "transcribe" else
+                        "/content/colab-ai-vllm.log",
                 "bootstrap": "/content/colab-ai-bootstrap.log",
                 "omni": "/content/colab-ai-voice-omni.log"}[args.source]
     if args.source == 'omni' and state.get('voice_variant') != 'higgs3':
@@ -904,6 +948,16 @@ def do_test(args):
     state = state_read()
     if not state:
         raise RuntimeError("Sem sessão. Execute ai-colab start code ou start voice primeiro.")
+    if state.get("mode") == "transcribe":
+        if args.file:
+            return do_transcribe(argparse.Namespace(file=args.file, output=None, format='txt',
+                                                     language='pt', timeout=args.timeout, overwrite=False))
+        good, models = local_api(state, timeout=8)
+        if not good:
+            raise RuntimeError(f"Servidor ASR indisponível: {models}")
+        print(f"API ASR pronta: {models}. Para testar inferência real, use:")
+        print('  ai-colab transcribe --file /caminho/audio.mp3 --output transcricao.txt')
+        return
     if state.get("mode") == "voice":
         voice_args = argparse.Namespace(action="generate", text="Olá! Teste de geração de voz no Colab.",
             file=None, output=str(STATE_DIR / "voice-test.wav"), language="Portuguese",
@@ -956,7 +1010,9 @@ def do_models(args):
     print("Modelos e modalidades:")
     for m, p in PROFILES.items():
         print(f"  {m:13} {p['model']} — {p['note']}")
-    for variant, model in VOICE_MODELS.items():
+    for variant, model in ASR_MODELS.items():
+        print(f"  {'transcribe/'+variant:20} {model} — GPU {ASR_DEFAULT_GPU[variant]} | {ASR_NOTES[variant]}")
+    for variant, model in ACTIVE_VOICE_MODELS.items():
         extra = VOICE_NOTES.get(variant, "Qwen3-TTS")
         print(f"  {'voice/'+variant:18} {model} — GPU {VOICE_DEFAULT_GPU[variant]} | {extra}")
     for m, desc in COMING.items():
@@ -1040,15 +1096,135 @@ def do_voice(args):
     print(f'Arquivo criado: {out} | {total / 1024:.1f} KiB | {time.monotonic()-begin:.1f}s')
 
 
+def _srt_clock(seconds: float) -> str:
+    if not isinstance(seconds, (int, float)) or not 0 <= seconds < 999999:
+        raise RuntimeError("Timestamp ASR inválido")
+    milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(milliseconds, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    whole, millis = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{whole:02},{millis:03}"
+
+
+def _formats_from_options(input_path: Path, output: str | None, fmt: str):
+    """Monta caminhos locais sem aceitar extensão enganosa."""
+    if fmt == "all":
+        base = Path(output).expanduser() if output else input_path.with_name(input_path.stem + '-transcricao')
+        if base.suffix.lower() in ('.txt', '.srt', '.json'):
+            base = base.with_suffix('')
+        return {ext: base.with_suffix('.' + ext) for ext in ('txt', 'srt', 'json')}
+    if output:
+        path = Path(output).expanduser()
+        if path.suffix.lower() != '.' + fmt:
+            raise RuntimeError(f"A extensão do --output deve ser .{fmt}; ou use --format apropriado")
+    else:
+        path = input_path.with_name(input_path.stem + '-transcricao.' + fmt)
+    return {fmt: path}
+
+
+def _render_transcription(payload: dict, fmt: str) -> str:
+    if fmt == 'txt':
+        return (payload.get('text') or '').strip() + '\n'
+    if fmt == 'json':
+        return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    segments = payload.get('segments') or []
+    if not segments:
+        raise RuntimeError("Modelo não retornou timestamps reais. Não será gerado SRT fictício.")
+    parts = []
+    for number, seg in enumerate(segments, 1):
+        start, end = float(seg['start']), float(seg['end'])
+        if end < start:
+            raise RuntimeError('Timestamp inválido retornado pela engine')
+        parts.append(f"{number}\n{_srt_clock(start)} --> {_srt_clock(end)}\n{seg['text'].strip()}\n")
+    return '\n'.join(parts) + '\n'
+
+
+def do_transcribe(args):
+    """Envia áudio em streaming via SSH privado, devolve somente texto/legendas."""
+    import http.client
+    state = state_read()
+    if not state or state.get('mode') != 'transcribe':
+        raise RuntimeError('Inicie ASR primeiro: ai-colab start transcribe --asr-model whisper')
+    source = Path(args.file).expanduser().resolve()
+    if not source.is_file():
+        raise RuntimeError(f'Arquivo de entrada não encontrado: {source}')
+    extensions = {'.wav','.mp3','.m4a','.mp4','.ogg','.oga','.opus',
+                  '.flac','.aac','.webm','.mov','.mpeg','.mpga','.wma'}
+    if source.suffix.lower() not in extensions:
+        raise RuntimeError('Formato não suportado. Use WAV/MP3/M4A/MP4/FLAC/OGG/OPUS/WEBM.')
+    size = source.stat().st_size
+    if not 0 < size <= 150 * 1024 * 1024:
+        raise RuntimeError('Áudio deve ter entre 1 byte e 150 MiB.')
+    if args.timeout < 1:
+        raise RuntimeError('Timeout deve ser positivo')
+    formats = _formats_from_options(source, args.output, args.format)
+    for dest in formats.values():
+        if not dest.parent.exists() or not dest.parent.is_dir():
+            raise RuntimeError(f'Pasta de saída ausente: {dest.parent}')
+        if dest.exists() and not args.overwrite:
+            raise RuntimeError(f'Arquivo já existe: {dest}. Para substituir, use --overwrite.')
+    conn = http.client.HTTPConnection('127.0.0.1', int(state['port']), timeout=args.timeout)
+    begun = time.monotonic()
+    try:
+        conn.putrequest('POST', '/_colab_ai/transcribe')
+        for header, value in {
+            'X-Api-Key': state['token'], 'Content-Type': 'application/octet-stream',
+            'Content-Length': str(size), 'X-Colab-Ai-Extension': source.suffix.lower(),
+            'X-Colab-Ai-Language': args.language,
+        }.items():
+            conn.putheader(header, value)
+        conn.endheaders()
+        with source.open('rb') as src:
+            while True:
+                chunk = src.read(65536)
+                if not chunk:
+                    break
+                conn.send(chunk)
+        print(f'Transcrevendo com {state["model"]} no Colab...', flush=True)
+        response = conn.getresponse()
+        raw = response.read(16 * 1024 * 1024 + 1)
+        if len(raw) > 16 * 1024 * 1024:
+            raise RuntimeError('Resposta ASR ultrapassou 16 MiB')
+        if response.status != 200:
+            raise RuntimeError(f'API ASR HTTP {response.status}: {raw.decode("utf-8", "replace")[:450]}')
+        result = json.loads(raw)
+        if not isinstance(result, dict) or not isinstance(result.get('text'), str):
+            raise RuntimeError('Resposta inválida da engine ASR')
+        outputs = {k: _render_transcription(result, k) for k in formats}
+        # Prepara todos os arquivos antes de substituir qualquer destino.
+        prepared = {}
+        try:
+            for fmt, destination in formats.items():
+                with tempfile.NamedTemporaryFile('w', encoding='utf-8',
+                                                  prefix='.colab-asr-', suffix='.tmp',
+                                                  dir=destination.parent, delete=False) as tmp:
+                    tmp.write(outputs[fmt])
+                    prepared[fmt] = Path(tmp.name)
+            for fmt, destination in formats.items():
+                os.replace(prepared[fmt], destination)
+                print(f'Arquivo criado: {destination}')
+        finally:
+            for pth in prepared.values():
+                pth.unlink(missing_ok=True)
+        print(f'Concluído em {time.monotonic() - begun:.1f}s | idioma={result.get("language", "?")} '
+              f'| segmentos={len(result.get("segments") or [])}')
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise RuntimeError(f'Falha na transcrição/comunicação: {type(exc).__name__}: {exc}') from exc
+    finally:
+        conn.close()
+
+
 def parser_make():
     p = argparse.ArgumentParser(prog="ai-colab", description="Gerenciador multimodal de IA no Colab via CLI + SSH.")
     p.add_argument("--version", action="version", version=f"Colab AI CLI {VERSION}")
     sub = p.add_subparsers(dest="command", required=True)
     a = sub.add_parser("start", help="Inicia uma modalidade")
-    a.add_argument("mode", choices=[*PROFILES, "voice", *COMING], default="code", nargs="?")
-    a.add_argument("--gpu", default=None, help="Voice: L4 padrão, T4 kokoro, H100 higgs3 (G4 experimental); Code: G4")
-    a.add_argument("--voice-model", choices=list(VOICE_MODELS), default="custom",
-                   help="custom/design/clone (Qwen), voxcpm2, chatterbox-br, kokoro, higgs3")
+    a.add_argument("mode", choices=[*PROFILES, "voice", "transcribe", *COMING], default="code", nargs="?")
+    a.add_argument("--gpu", default=None, help="Code: G4; Voice: L4/T4; Transcribe: T4 Whisper, L4 Qwen")
+    a.add_argument("--voice-model", choices=list(ACTIVE_VOICE_MODELS), default="custom",
+                   help="custom/design/clone (Qwen), voxcpm2, chatterbox-br, kokoro")
+    a.add_argument("--asr-model", choices=list(ASR_MODELS), default="whisper",
+                   help="Whisper Large V3 Turbo (padrão T4) ou Qwen3-ASR (L4)")
     a.add_argument("--hf-mode", choices=["fast", "normal"], help="Sobrescreve o padrão hf_xet para esta sessão")
     a.add_argument("--session", default=SESSION)
     a.add_argument("--auth", choices=["oauth2", "adc"], default="oauth2")
@@ -1087,7 +1263,19 @@ def parser_make():
     a.set_defaults(func=do_logs)
     a = sub.add_parser("test", help="Executa geração real pela API")
     a.add_argument("--timeout", type=int, default=180)
+    a.add_argument("--file", help="Áudio de teste para o modo transcribe (sem arquivo: somente health)")
     a.set_defaults(func=do_test)
+    a = sub.add_parser("transcribe", help="Transcreve áudio no Colab e salva TXT/SRT/JSON no Linux")
+    a.add_argument("--file", "--input", dest="file", required=True,
+                   help="Arquivo de áudio/vídeo local (WAV, MP3, MP4, M4A, FLAC, OGG, ...)")
+    a.add_argument("--output", help="Destino (inferido do formato; padrão ao lado do áudio)")
+    a.add_argument("--format", choices=["txt", "srt", "json", "all"], default="txt",
+                   help="Formato de saída; all produz três arquivos")
+    a.add_argument("--language", choices=["pt", "auto"], default="pt",
+                   help="Forçar português ou detectar automaticamente")
+    a.add_argument("--timeout", type=int, default=1800, help="Timeout em segundos para ASR")
+    a.add_argument("--overwrite", action="store_true", help="Permitir substituir arquivos existentes")
+    a.set_defaults(func=do_transcribe)
     voice = sub.add_parser("voice", help="Gera WAV usando a engine Voice selecionada")
     voice_sub = voice.add_subparsers(dest="action", required=True)
     for action in ("generate", "design", "clone"):
@@ -1100,7 +1288,7 @@ def parser_make():
         v.add_argument("--timeout", type=int, default=600)
         if action == "generate":
             v.add_argument("--speaker", default="Ryan", help="Qwen: Ryan etc.; Kokoro: pf_dora/pm_alex/pm_santa")
-            v.add_argument("--style", default="", help="VoxCPM/Higgs: descrição ou orientação expressiva")
+            v.add_argument("--style", default="", help="VoxCPM/Qwen: descrição ou orientação expressiva")
             v.add_argument("--speed", type=float, default=1., help="Kokoro: velocidade 0.5–2.0")
             v.add_argument("--temperature", type=float, default=.8, help="Chatterbox: temperatura 0.05–2")
             v.add_argument("--exaggeration", type=float, default=.5, help="Chatterbox: expressividade 0.25–2")
