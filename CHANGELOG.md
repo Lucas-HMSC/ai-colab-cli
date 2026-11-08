@@ -1,3 +1,11 @@
+# Colab AI CLI 0.2.4
+
+- Instrumentação das cinco etapas de carregamento do Chatterbox PT-BR.
+- Higgs Omni: aguarda health real do backend; registra resumo de possíveis causas de falha e não anuncia "pronto" prematuramente.
+- Quando o proxy/túnel fica indisponível, apresenta comandos úteis de diagnóstico, sem criar nova GPU.
+- Sem mudanças nas APIs dos três backends de voz já validados nem no perfil de programação.
+- Esta atualização não resolve ainda uma causa-raiz desconhecida de Higgs; requer logs completos da instância real.
+
 # Colab AI CLI 0.2.3
 
 - Carregador dedicado para o pacote regional Chatterbox V3 PT-BR; remove API incompatível de PyPI.

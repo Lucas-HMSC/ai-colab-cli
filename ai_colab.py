@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -494,7 +494,12 @@ def wait_ready(state: dict, seconds: int = 900, *, interval: float = 5) -> None:
                 print(f"API pronta: {models}")
                 return
             if time.monotonic() - last_report >= 30:
-                print(f"[{time.monotonic()-begun:.0f}s] Aguardando proxy/túnel: {snapshot}", flush=True)
+                elapsed = time.monotonic()-begun
+                print(f"[{elapsed:.0f}s] Aguardando proxy/túnel: {snapshot}", flush=True)
+                if elapsed > 120 and state.get('mode') == 'voice':
+                    print("Se persistir, examine sem reiniciar a GPU: "
+                          "ai-colab logs --source bootstrap --lines 80; "
+                          "ai-colab status --remote; ai-colab diagnostics", flush=True)
                 last_report = time.monotonic()
         time.sleep(min(interval, max(0, deadline - time.monotonic())))
     summary = ((f"Fase: {last_snapshot.get('phase')} | "

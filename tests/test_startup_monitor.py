@@ -79,7 +79,7 @@ class WaitTests(unittest.TestCase):
 
     def test_wait_cli_exists(self):
         self.assertEqual(app.parser_make().parse_args(['wait']).seconds,1800)
-        self.assertEqual(app.VERSION,'0.2.3')
+        self.assertEqual(app.VERSION,'0.2.4')
 
 
 class ProxyStatusTests(unittest.TestCase):

@@ -144,6 +144,43 @@ if process_alive(pidfile, b'colab-ai-voice-api.py'):
     print('Worker Voice já ativo/inicializando. Preservando processo.', flush=True)
     sys.exit(0)
 
+def omni_failure_summary(path):
+    """Resume causas relevantes sem depender das últimas linhas genéricas."""
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except OSError:
+        return 'Log do Higgs Omni ainda indisponível.'
+    terms = ('error', 'exception', 'failed', 'cuda', 'memory', 'traceback',
+             'not found', 'not supported', 'invalid', 'assertion')
+    critical = [line[:300] for line in lines if any(term in line.lower() for term in terms)]
+    return ('Possíveis causas encontradas no log:\n' + '\n'.join(critical[-16:]) +
+            '\n--- Últimas linhas ---\n' + '\n'.join(line[:300] for line in lines[-24:]))[-6400:]
+
+
+def wait_omni_backend(proc_pid, log_path, timeout_seconds=420):
+    """Não anuncia Voice pronto enquanto as etapas Omni não estão saudáveis."""
+    start = time.monotonic()
+    next_notice = start
+    while time.monotonic() - start < timeout_seconds:
+        if not process_alive(aux_pidfile, b'/bin/vllm'):
+            raise RuntimeError('Higgs Omni encerrou antes de ficar saudável.\n' +
+                               omni_failure_summary(log_path))
+        try:
+            with urlopen('http://127.0.0.1:8002/health', timeout=3) as resp:
+                if resp.status == 200:
+                    print('Higgs Omni: API interna respondeu HTTP 200.', flush=True)
+                    return
+        except OSError:
+            pass
+        if time.monotonic() >= next_notice:
+            print(f'Higgs Omni: aguardando engines internas ({int(time.monotonic()-start)}s); '
+                  'consulte ai-colab logs --source omni --lines 200.', flush=True)
+            next_notice = time.monotonic() + 30
+        time.sleep(5)
+    raise RuntimeError('Higgs Omni não ficou saudável após '
+                       f'{timeout_seconds}s.\n' + omni_failure_summary(log_path))
+
+
 if variant == 'higgs3':
     if not process_alive(aux_pidfile, b'/bin/vllm'):
         aux_pidfile.unlink(missing_ok=True)
@@ -160,8 +197,9 @@ if variant == 'higgs3':
         print('Higgs via vLLM-Omni iniciado na porta privada 8002. PID:', backend.pid, flush=True)
         time.sleep(3)
         if backend.poll() is not None:
-            print('\n'.join(aux_log.read_text(errors='replace').splitlines()[-25:]), flush=True)
-            raise RuntimeError('vLLM-Omni encerrou na inicialização; consulte ai-colab logs --source omni --lines 250')
+            raise RuntimeError('vLLM-Omni encerrou na inicialização.\n' + omni_failure_summary(aux_log))
+    # Evita falso positivo: a API HTTP frontal pode iniciar antes das etapas Omni.
+    wait_omni_backend(aux_pidfile, aux_log)
 
 pidfile.unlink(missing_ok=True)
 with logfile.open('ab') as log:

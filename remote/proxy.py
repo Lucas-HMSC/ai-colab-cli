@@ -90,6 +90,7 @@ def vllm_status(include_metrics=False):
         pid = None
     alive = process_alive(pid)
     omni_log_tail = ""
+    omni_alive = None
     if VOICE_MODE and CONF.get('voice_variant') == 'higgs3':
         omni_file = Path('/content/colab-ai-voice-omni.pid')
         try:
@@ -152,6 +153,7 @@ def vllm_status(include_metrics=False):
     if omni_log_tail and alive is False:
         log_tail = (log_tail + "\n--- Higgs Omni ---\n" + omni_log_tail)[-3500:]
     status = {"vllm_pid": pid, "vllm_alive": alive, "vllm_ready": ready,
+              "omni_alive": omni_alive if VOICE_MODE and CONF.get('voice_variant') == 'higgs3' else None,
               "phase": phase, "log_bytes": log_bytes, "log_tail": log_tail,
               "bootstrap_pid": bootstrap_pid, "bootstrap_alive": bootstrap_alive,
               "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "code"}

@@ -50,6 +50,7 @@ elif VARIANT == 'chatterbox-br':
     # mas o pack regional contém s3gen_v3.pt com dois buffers derivados ausentes.
     # Instanciamos as peças explicitamente, com validação estrita de todo o
     # restante do checkpoint, conforme formato descrito no repositório oficial.
+    print('Chatterbox PT-BR [1/5]: importando componentes...', flush=True)
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS, Conditionals
     from chatterbox.models.t3 import T3
     from chatterbox.models.t3.modules.t3_config import T3Config
@@ -63,13 +64,16 @@ elif VARIANT == 'chatterbox-br':
                                         'grapheme_mtl_merged_expanded_v1.json']))
     shared = Path(snapshot_download(
         repo_id='ResembleAI/chatterbox', allow_patterns=['ve.pt', 'conds.pt']))
+    print('Chatterbox PT-BR [2/5]: pesos regionais e compartilhados disponíveis.', flush=True)
     ve = VoiceEncoder()
     ve.load_state_dict(torch.load(shared / 've.pt', map_location='cpu', weights_only=True))
     ve.to('cuda').eval()
+    print('Chatterbox PT-BR [3/5]: codificador de voz carregado.', flush=True)
     t3 = T3(T3Config.multilingual())
     t3_state = load_file(regional / 't3_pt_br.safetensors')
     t3.load_state_dict(t3_state, strict=True)
     t3.to('cuda').eval()
+    print('Chatterbox PT-BR [4/5]: T3 regional carregado.', flush=True)
     s3gen = S3Gen()
     # A implementação de referência do pacote V3 usa strict=False para S3Gen.
     # Logar discrepâncias para diagnóstico, sem exigir chaves específicas da
@@ -79,6 +83,7 @@ elif VARIANT == 'chatterbox-br':
     print('S3Gen V3: chaves não correspondentes (ausentes/inesperadas):',
           len(incompat.missing_keys), len(incompat.unexpected_keys), flush=True)
     s3gen.to('cuda').eval()
+    print('Chatterbox PT-BR [5/5]: decodificador V3 carregado.', flush=True)
     tokenizer = MTLTokenizer(str(regional / 'grapheme_mtl_merged_expanded_v1.json'))
     default_conditions = Conditionals.load(shared / 'conds.pt', map_location='cpu').to('cuda')
     MODEL_OBJ = ChatterboxMultilingualTTS(t3, s3gen, ve, tokenizer, 'cuda',

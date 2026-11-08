@@ -1,3 +1,40 @@
+# Colab AI CLI v0.2.4 — Diagnóstico de Chatterbox e Higgs
+
+**Atualização de diagnóstico, não confirmação de correção na GPU.** Qwen3-TTS (Custom/Design), VoxCPM2 e Kokoro funcionaram nos testes do usuário. Em Chatterbox PT-BR há registros de desconexão SSH/proxy durante inicialização, sem causa de falha do modelo comprovada. Em Higgs 3 a falha é do motor vLLM-Omni (`Orchestrator initialization failed`), mas a origem não foi capturada pelas últimas linhas do log.
+
+Novidades:
+- Progresso detalhado (5 fases) de carregamento do Chatterbox PT-BR, para diferenciar download, importação e inicialização.
+- Higgs só publica o worker Voice após a engine Omni ficar saudável em `127.0.0.1:8002/health`. A falha ou timeout traz um extrato de mensagens relevantes do log, não apenas o final da stack.
+- O cliente orienta a usar logs e diagnóstico quando o túnel permanecer indisponível durante mais de dois minutos.
+- Preserva os backends já validados, SSH, `hf_xet`, e modo Code com janela configurável.
+
+## Instalação
+
+```bash
+cd ~/Downloads
+unzip colab-ai-cli-v0.2.4.zip -d colab-ai-cli-v0.2.4
+cd colab-ai-cli-v0.2.4/colab-ai-cli
+bash install.sh
+ai-colab --version
+```
+
+**Se a GPU estiver ativa, consulte os logs antes de `stop`** para não perder o diagnóstico:
+
+```bash
+ai-colab status --remote
+ai-colab logs --source bootstrap --lines 100
+ai-colab logs --source vllm --lines 100
+# somente Higgs
+ai-colab logs --source omni --lines 250
+ai-colab diagnostics
+```
+
+O comando `logs` usa download direto da Colab CLI e pode funcionar mesmo com o túnel SSH indisponível, desde que a sessão remota continue acessível. Não é necessário criar outra GPU apenas para ler os logs.
+
+Se precisar testar novamente depois de atualizar, `ai-colab stop` para encerrar o servidor antigo e `ai-colab start voice --voice-model chatterbox-br --gpu L4` ou `... --voice-model higgs3 --gpu H100`. A H100 é a GPU da receita de referência do Higgs e depende da disponibilidade do Colab; não é garantia de êxito. O servidor de Higgs continua experimental e pode consumir muitas unidades.
+
+---
+
 ## VoxCPM2: correção da versão 0.2.2
 
 A v0.2.1 enviava `seed=42` ao `VoxCPM.generate`. O PyPI `voxcpm==2.0.3` não aceita esse argumento, produzindo `TypeError` antes da geração. A v0.2.3 omite esse parâmetro e fixa a versão para manter a API estável. A correção foi testada com um substituto local que reproduz a assinatura do pacote publicado; a primeira geração real na L4 ainda precisa ser verificada. Outros perfis, inclusive Kokoro e Code, foram preservados.
@@ -26,7 +63,7 @@ colab --auth=oauth2 sessions
 
 # Na pasta colab-ai-cli extraída do ZIP
 bash install.sh
-ai-colab --version       # 0.2.2
+ai-colab --version       # 0.2.4
 ai-colab models
 ai-colab ssh-check        # valida chave sem gastar CU
 ```
