@@ -1,3 +1,14 @@
+# v0.2.8 — compatibilidade CUDA e autoteste Whisper
+
+- Adiciona explicitamente dependências NVIDIA `nvidia-cublas-cu12` e `nvidia-cudnn-cu12>=9,<10` apenas ao ambiente isolado Whisper; configura o loader dinâmico antes de iniciar a API.
+- Implementa inferência curta no encoder CTranslate2 antes de declarar ASR pronto, capturando erros de biblioteca CUDA que apareciam apenas no primeiro arquivo real.
+- Classifica falhas CUDA, de kernel e VRAM de modo a oferecer dicas sem registrar conteúdo enviado.
+- Incrementa marca de dependências para `.colab-asr-v028-ready`.
+- Preserva Qwen-ASR, Code, Voice e todas as demais rotas.
+- Regressões locais sem GPU; validação na T4 ainda pendente.
+
+---
+
 # Alterações — v0.2.7
 
 ## Corrigido: Whisper Large V3 Turbo no Colab

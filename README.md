@@ -1,4 +1,4 @@
-# Colab AI CLI v0.2.7
+# Colab AI CLI v0.2.8
 
 Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. Esta versão adiciona transcrição de áudio em português brasileiro sem alterar os modos anteriores de programação e voz.
 
@@ -112,3 +112,11 @@ O comando `claude-colab` preserva o modo de permissões anterior (incluindo `--d
 - [Whisper Turbo para CTranslate2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2)
 - [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
 - [Qwen3-ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
+
+### Diagnóstico CUDA no Whisper (v0.2.8)
+
+O worker do Whisper agora instala cuBLAS CUDA 12 e cuDNN 9 em um Python 3.12 isolado, estabelece o `LD_LIBRARY_PATH` antes da inicialização e realiza uma inferência curta de autoteste. O servidor **não será marcado como pronto** se o encoder falhar na primeira execução. Isso detecta casos em que os pesos carregam, mas falta `libcublas.so.12` / `libcudnn.so.9` ou existe incompatibilidade de kernel CUDA.
+
+Após `ai-colab start transcribe --asr-model whisper --gpu T4`, aguarde a mensagem de API pronta. Se falhar, **não inicie novamente nem desligue imediatamente**: use `ai-colab logs --source vllm --lines 120` e `ai-colab logs --source bootstrap --lines 80`. A ferramenta agora informa a categoria do erro e dicas de correção. Os arquivos de áudio não são incluídos nos logs.
+
+O Qwen3-ASR não foi alterado; continua sendo alternativa funcional até a validação do Whisper na GPU real.

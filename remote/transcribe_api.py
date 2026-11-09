@@ -104,6 +104,34 @@ def load_model():
     raise RuntimeError('Perfil ASR desconhecido')
 
 
+def classify_whisper_failure(exc):
+    """Classifica erros da GPU sem imprimir transcrições nem caminhos do áudio."""
+    message = str(exc).lower()
+    if any(token in message for token in ('libcublas', 'libcudnn', 'cublas64', 'cudnn64',
+                                           'cannot be loaded', 'not found or cannot be loaded')):
+        return ('cuda-libraries', 'Confira CUDA 12, cuBLAS, cuDNN 9 e LD_LIBRARY_PATH do worker.')
+    if 'out of memory' in message or 'cuda error: 2' in message:
+        return ('gpu-memory', 'GPU sem VRAM suficiente. Verifique outros processos e uso de memória.')
+    if 'cublas_status' in message or 'cudnn_status' in message or 'no kernel image' in message:
+        return ('cuda-kernel', 'Incompatibilidade de kernel CUDA/cuBLAS/cuDNN; verifique versões e GPU.')
+    return ('inference', 'Verifique o ambiente CUDA/CTranslate2 e os logs completos do servidor.')
+
+
+def whisper_preflight(model):
+    """Força a primeira execução do encoder antes de anunciar API pronta.
+
+    A saída de transcribe() é um generator: é preciso iterá-lo para que erros CUDA
+    que surgem apenas em encode() sejam detectados ainda na inicialização.
+    """
+    import numpy as np
+    sample = np.zeros(16000, dtype=np.float32)
+    segments, _ = model.transcribe(sample, language='pt', task='transcribe',
+                                   beam_size=1, vad_filter=False,
+                                   condition_on_previous_text=False)
+    next(iter(segments), None)
+    print('Whisper: autoteste de inferência CUDA aprovado', flush=True)
+
+
 def infer(model, audio_path, duration, language='pt'):
     if VARIANT == 'whisper':
         waveform = whisper_pcm16_to_array(audio_path)
@@ -179,10 +207,15 @@ def handler_for(model):
                 # Não registrar nomes, textos ou conteúdo de áudio.
                 import traceback
                 frame = traceback.extract_tb(exc.__traceback__)[-1]
-                print(f'Falha ASR: {type(exc).__name__} @ {frame.name}:{frame.lineno}', flush=True)
+                category, advice = classify_whisper_failure(exc) if VARIANT == 'whisper' else (
+                    'inference', 'Consulte os logs do worker ASR.')
+                # Uma exceção CUDA pode conter caminhos internos; nunca imprimir conteúdo do áudio.
+                print(f'Falha ASR: {type(exc).__name__} @ {frame.name}:{frame.lineno} '
+                      f'| categoria={category} | dica={advice}', flush=True)
                 self.reply(500, {'error': 'Falha na transcrição', 'type': type(exc).__name__,
                                  'location': f'{frame.name}:{frame.lineno}',
-                                 'hint': 'Use ai-colab logs --source vllm --lines 100'})
+                                 'category': category,
+                                 'hint': advice + ' Consulte ai-colab logs --source vllm --lines 100'})
 
         def log_message(self, fmt, *args):
             pass
@@ -192,6 +225,17 @@ def handler_for(model):
 if __name__ == '__main__':
     print('Carregando ASR:', VARIANT, MODEL_ID, flush=True)
     loaded = load_model()
+    if VARIANT == 'whisper':
+        try:
+            whisper_preflight(loaded)
+        except Exception as exc:
+            category, advice = classify_whisper_failure(exc)
+            print(f'ERRO no autoteste CUDA do Whisper: {type(exc).__name__} '
+                  f'| categoria={category} | dica={advice}', flush=True)
+            # Somente mensagens de bibliotecas CUDA (sem conteúdo de usuário).
+            if category in ('cuda-libraries', 'cuda-kernel', 'gpu-memory'):
+                print('Detalhe técnico CUDA:', str(exc)[:260], flush=True)
+            raise
     print('ASR pronto:', MODEL_ID, flush=True)
     server = ThreadingHTTPServer(('127.0.0.1', 8000), handler_for(loaded))
     server.daemon_threads = True

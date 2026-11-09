@@ -92,7 +92,7 @@ class WhisperPyAVRegression(unittest.TestCase):
         bootstrap = (ROOT/'remote/transcribe_bootstrap.py').read_text()
         worker = (ROOT/'remote/transcribe_api.py').read_text()
         self.assertIn("'av>=11,<19'",bootstrap)
-        self.assertIn('.colab-asr-v027-ready',bootstrap)
+        self.assertIn('.colab-asr-v028-ready',bootstrap)
         self.assertIn("'-c:a', 'pcm_s16le'",worker)
         self.assertIn('whisper_pcm16_to_array(audio_path)', worker)
 

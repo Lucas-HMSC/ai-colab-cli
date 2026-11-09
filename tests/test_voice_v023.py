@@ -27,7 +27,7 @@ class VoiceV023Tests(unittest.TestCase):
         self.assertIn("'--omni'",boot)
         self.assertIn("'/bin/vllm'",boot)
         self.assertEqual(app.VOICE_DEFAULT_GPU['higgs3'],'H100')
-        self.assertEqual(app.VERSION,'0.2.7')
+        self.assertEqual(app.VERSION,'0.2.8')
 
     def test_qwen_voice_design_does_not_change_official_api(self):
         api=(ROOT/'remote/voice_api.py').read_text()

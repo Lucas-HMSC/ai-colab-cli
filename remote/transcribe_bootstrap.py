@@ -36,17 +36,35 @@ python_bin = ENV / 'bin/python'
 if not python_bin.exists():
     print('Preparando Python 3.12 isolado para ASR...', flush=True)
     subprocess.check_call([uv, 'venv', '--python', '3.12', '--seed', str(ENV)])
-marker = ENV / '.colab-asr-v027-ready'
+marker = ENV / '.colab-asr-v028-ready'
 if not marker.exists():
     print('Instalando dependências ASR:', VARIANT, flush=True)
     if VARIANT == 'whisper':
-        packages = ['faster-whisper>=1.1,<2', 'av>=11,<19', 'huggingface_hub>=0.34', 'hf_xet']
+        packages = ['faster-whisper>=1.1,<2', 'av>=11,<19', 'huggingface_hub>=0.34', 'hf_xet',
+                    'nvidia-cublas-cu12', 'nvidia-cudnn-cu12>=9,<10']
     elif VARIANT == 'qwen':
         packages = ['qwen-asr', 'huggingface_hub>=0.34', 'hf_xet', 'soundfile', 'librosa']
     else:
         raise RuntimeError('Perfil ASR desconhecido')
     subprocess.check_call([uv, 'pip', 'install', '--python', str(python_bin), *packages])
     marker.write_text('ready\n')
+# As bibliotecas CUDA usadas pelo CTranslate2 precisam estar no caminho do
+# carregador dinâmico ANTES de iniciar o Python do worker. Somente ter nvidia-smi
+# funcional nao comprova a disponibilidade de cuBLAS/cuDNN na primeira inferência.
+if VARIANT == 'whisper':
+    libsite = subprocess.check_output(
+        [str(python_bin), '-c', 'import sysconfig;print(sysconfig.get_paths()["purelib"])'],
+        text=True).strip()
+    from pathlib import Path as _Path
+    libdirs = [_Path(libsite) / 'nvidia' / 'cublas' / 'lib',
+               _Path(libsite) / 'nvidia' / 'cudnn' / 'lib']
+    for directory in libdirs:
+        if not directory.is_dir():
+            raise RuntimeError(f'Biblioteca CUDA ausente: {directory.name}; verifique dependências ASR')
+    previous = os.environ.get('LD_LIBRARY_PATH', '')
+    os.environ['LD_LIBRARY_PATH'] = ':'.join([*(str(x) for x in libdirs), *([previous] if previous else [])])
+    print('CTranslate2: cuBLAS CUDA 12 + cuDNN 9 disponíveis no ambiente do worker', flush=True)
+
 if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
     print('Instalando FFmpeg para normalização de áudio...', flush=True)
     subprocess.check_call(['apt-get', 'update', '-qq'], stdout=subprocess.DEVNULL)
