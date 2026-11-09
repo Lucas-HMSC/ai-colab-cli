@@ -63,10 +63,30 @@ def duration_for(path):
 def to_wav(path, output):
     p = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
                         '-y', '-i', str(path), '-vn', '-ac', '1', '-ar', '16000',
-                        '-f', 'wav', str(output)], stdout=subprocess.DEVNULL,
+                        '-c:a', 'pcm_s16le', '-f', 'wav', str(output)], stdout=subprocess.DEVNULL,
                        stderr=subprocess.PIPE, timeout=300)
     if p.returncode or not output.exists() or output.stat().st_size < 44:
         raise ValueError('Não foi possível decodificar o áudio (FFmpeg)')
+
+
+def whisper_pcm16_to_array(path):
+    """Carrega WAV mono PCM16/16 kHz normalizado pelo FFmpeg.
+
+    Evita PyAV na etapa de inferência: versões do faster-whisper anteriores
+    ao fix upstream enviam metadata_errors a av.open(), removido no PyAV 19.
+    faster-whisper aceita diretamente np.ndarray float32.
+    """
+    import wave
+    import numpy as np
+    with wave.open(str(path), 'rb') as audio:
+        if (audio.getnchannels() != 1 or audio.getframerate() != 16000
+                or audio.getsampwidth() != 2 or audio.getcomptype() != 'NONE'):
+            raise ValueError('WAV normalizado deve ser PCM16 mono 16 kHz')
+        # As amostras são copiadas para float32; o decodificador de PyAV não é chamado.
+        pcm = audio.readframes(audio.getnframes())
+    if not pcm:
+        raise ValueError('WAV normalizado está vazio')
+    return np.frombuffer(pcm, dtype='<i2').astype(np.float32) / 32768.0
 
 
 def load_model():
@@ -86,7 +106,8 @@ def load_model():
 
 def infer(model, audio_path, duration, language='pt'):
     if VARIANT == 'whisper':
-        seg_iter, info = model.transcribe(str(audio_path), language=None if language == 'auto' else 'pt',
+        waveform = whisper_pcm16_to_array(audio_path)
+        seg_iter, info = model.transcribe(waveform, language=None if language == 'auto' else 'pt',
                                          task='transcribe', beam_size=5, vad_filter=True,
                                          condition_on_previous_text=True,
                                          word_timestamps=False)

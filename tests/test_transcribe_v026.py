@@ -160,7 +160,11 @@ class RemoteASRLogicTests(unittest.TestCase):
         self.worker.VARIANT='whisper'
         model=mock.Mock()
         model.transcribe.return_value=(iter([E(text='Bom dia',start=0,end=0.85)]),E(language='pt'))
-        payload=self.worker.infer(model,Path('/tmp/fake.mp3'),1.0,'pt')
+        import numpy as np
+        with mock.patch.object(self.worker, 'whisper_pcm16_to_array',
+                               return_value=np.zeros(16000,dtype=np.float32)):
+            payload=self.worker.infer(model,Path('/tmp/fake.wav'),1.0,'pt')
+        self.assertIsInstance(model.transcribe.call_args.args[0],np.ndarray)
         self.assertEqual(payload['segments'][0]['text'],'Bom dia')
         self.assertEqual(payload['language'],'pt')
         self.assertEqual(payload['text'],'Bom dia')

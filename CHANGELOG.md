@@ -1,18 +1,17 @@
-# Alterações — v0.2.6
+# Alterações — v0.2.7
 
-## Novo: Transcribe PT-BR
+## Corrigido: Whisper Large V3 Turbo no Colab
 
-- `ai-colab start transcribe --asr-model whisper` (T4 padrão), usando Faster Whisper Large V3 Turbo convertido para CTranslate2.
-- `ai-colab start transcribe --asr-model qwen` (L4 padrão), usando Qwen3-ASR 1.7B e ForcedAligner 0.6B para marcação temporal de palavras.
-- `ai-colab transcribe --file <áudio> --output <arquivo> --format txt|json|srt|all`.
-- `--language pt|auto`, `--timeout`, `--overwrite`, validação de extensão e limites (150 MiB / 2 horas).
-- Upload em streaming pelo túnel SSH privado, com autenticação e processamento temporário no Colab.
-- Logs ASR acessíveis com `ai-colab logs --source vllm`.
-- Isolamento Python 3.12 para ambas as engines, com `hf_xet`.
+- Corrige o `TypeError` de `av.container.core.open` visto na v0.2.6. A combinação publicada de `faster-whisper` e PyAV 19 é incompatível devido ao argumento removido `metadata_errors`.
+- WAV normalizado agora é gerado como PCM16 mono / 16 kHz e lido como NumPy float32. O faster-whisper recebe diretamente o vetor de áudio, sem passar por `av.open` na inferência.
+- Por segurança, restringe PyAV a `<19` no ambiente isolado do Whisper, sem alterar o ambiente do Qwen.
+- Nova marca de instalação `.colab-asr-v027-ready`, evitando reutilizar um ambiente de dependências antigo sem correção.
+- Adiciona testes de regressão para o erro de decodificação, validação WAV e preservação do caminho Qwen-ASR.
 
-## Compatibilidade
+## Mantido
 
-- Qwen de programação, Claude Code e variantes Voice preservados.
-- Higgs segue oculto; cache persistente no Google Drive continua desativado.
-- 93 testes locais aprovados (incluindo novos testes de transmissão e formatadores).
-- Pendente: teste real em T4 e L4; não há confirmação de desempenho em produção.
+- Qwen3-ASR 1.7B com ForcedAligner; TXT/SRT/JSON, upload privado, monitoramento, SSH, modos Code/Voice e Higgs oculto.
+
+## Validação
+
+- Testes locais sem GPU; ainda necessita teste de Whisper T4 em Colab real.

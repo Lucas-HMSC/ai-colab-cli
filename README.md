@@ -1,4 +1,4 @@
-# Colab AI CLI v0.2.6
+# Colab AI CLI v0.2.7
 
 Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. Esta versão adiciona transcrição de áudio em português brasileiro sem alterar os modos anteriores de programação e voz.
 
@@ -60,7 +60,7 @@ ai-colab transcribe --file ~/Downloads/amostra.m4a --format all \
 
 Cria `teste-asr.txt`, `teste-asr.srt` e `teste-asr.json`. Se quiser substituir arquivos existentes, adicione `--overwrite`. O padrão é forçar português (`--language pt`); `--language auto` permite detecção automática do idioma. Para arquivos maiores, ajuste `--timeout 3600`.
 
-Limites: upload de até **150 MiB**, duração de até **120 minutos**, formatos `wav`, `mp3`, `m4a`, `mp4`, `flac`, `ogg`, `opus`, `webm`, `aac`, `mov`, `mpeg`, `mpga`, `wma`. O servidor usa FFmpeg para mono a 16 kHz antes da inferência.
+Limites: upload de até **150 MiB**, duração de até **120 minutos**, formatos `wav`, `mp3`, `m4a`, `mp4`, `flac`, `ogg`, `opus`, `webm`, `aac`, `mov`, `mpeg`, `mpga`, `wma`. O servidor usa FFmpeg para mono PCM16 a 16 kHz antes da inferência. No Whisper, passa o áudio já decodificado como NumPy float32 para `faster-whisper`, evitando o erro de API `av.open(metadata_errors=...)` com PyAV 19. O ambiente também restringe `av<19` como defesa adicional.
 
 ## Diagnóstico e gerenciamento
 

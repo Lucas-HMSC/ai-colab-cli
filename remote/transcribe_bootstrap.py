@@ -36,11 +36,11 @@ python_bin = ENV / 'bin/python'
 if not python_bin.exists():
     print('Preparando Python 3.12 isolado para ASR...', flush=True)
     subprocess.check_call([uv, 'venv', '--python', '3.12', '--seed', str(ENV)])
-marker = ENV / '.colab-asr-v026-ready'
+marker = ENV / '.colab-asr-v027-ready'
 if not marker.exists():
     print('Instalando dependências ASR:', VARIANT, flush=True)
     if VARIANT == 'whisper':
-        packages = ['faster-whisper>=1.1,<2', 'huggingface_hub>=0.34', 'hf_xet']
+        packages = ['faster-whisper>=1.1,<2', 'av>=11,<19', 'huggingface_hub>=0.34', 'hf_xet']
     elif VARIANT == 'qwen':
         packages = ['qwen-asr', 'huggingface_hub>=0.34', 'hf_xet', 'soundfile', 'librosa']
     else:
