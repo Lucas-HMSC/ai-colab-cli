@@ -32,10 +32,13 @@ except (FileNotFoundError, ValueError):
     CONF = {}  # testabilidade local; em produção o arquivo é obrigatório em serve.py
 VOICE_MODE = CONF.get("mode") == "voice"
 ASR_MODE = CONF.get("mode") == "transcribe"
+VIDEO_MODE = CONF.get("mode") == "video"
 PID_FILE = Path("/content/colab-ai-voice.pid" if VOICE_MODE else
-                "/content/colab-ai-asr.pid" if ASR_MODE else "/content/colab-ai-vllm.pid")
+                "/content/colab-ai-asr.pid" if ASR_MODE else
+                "/content/colab-ai-video.pid" if VIDEO_MODE else "/content/colab-ai-vllm.pid")
 LOG_FILE = Path("/content/colab-ai-voice.log" if VOICE_MODE else
-                "/content/colab-ai-asr.log" if ASR_MODE else "/content/colab-ai-vllm.log")
+                "/content/colab-ai-asr.log" if ASR_MODE else
+                "/content/colab-ai-video.log" if VIDEO_MODE else "/content/colab-ai-vllm.log")
 BOOT_FILE = Path("/content/colab-ai-bootstrap.log")
 BOOT_PID_FILE = Path("/content/colab-ai-bootstrap.pid")
 
@@ -160,7 +163,7 @@ def vllm_status(include_metrics=False):
               "omni_alive": omni_alive if VOICE_MODE and CONF.get('voice_variant') == 'higgs3' else None,
               "phase": phase, "log_bytes": log_bytes, "log_tail": log_tail,
               "bootstrap_pid": bootstrap_pid, "bootstrap_alive": bootstrap_alive,
-              "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "transcribe" if ASR_MODE else "code"}
+              "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "transcribe" if ASR_MODE else "video" if VIDEO_MODE else "code"}
     if include_metrics:
         status["metrics"] = collect_metrics()
     return status
@@ -180,6 +183,9 @@ def make_handler(api_key):
             parsed = urlsplit(self.path)
             if (self.command, parsed.path) not in ROUTES and not (
                 self.command == "GET" and parsed.path == "/_colab_ai/status"
+            ) and not (
+                VIDEO_MODE and parsed.path.startswith("/_colab_ai/video/jobs") and
+                self.command in ("GET", "POST")
             ):
                 self.send_error(404, "Rota indisponível")
                 return
@@ -203,6 +209,9 @@ def make_handler(api_key):
                 return
             if parsed.path == "/_colab_ai/transcribe" and not ASR_MODE:
                 self.send_error(404, "Transcribe não iniciado nesta sessão")
+                return
+            if parsed.path.startswith("/_colab_ai/video/jobs") and not VIDEO_MODE:
+                self.send_error(404, "Video não iniciado nesta sessão")
                 return
             # Encaminha arquivos ASR por streaming para não manter 150 MiB de
             # áudio na RAM do proxy. A chave do cliente jamais vai ao worker.

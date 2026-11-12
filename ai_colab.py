@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.2.8"
+VERSION = "0.3.0"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -35,6 +35,9 @@ VOICE_BOOTSTRAP_REMOTE = "/content/colab-ai-voice-bootstrap.py"
 VOICE_API_REMOTE = "/content/colab-ai-voice-api.py"
 ASR_BOOTSTRAP_REMOTE = "/content/colab-ai-transcribe-bootstrap.py"
 ASR_API_REMOTE = "/content/colab-ai-transcribe-api.py"
+VIDEO_BOOTSTRAP_REMOTE = "/content/colab-ai-video-bootstrap.py"
+VIDEO_API_REMOTE = "/content/colab-ai-video-api.py"
+VIDEO_GENERATOR_REMOTE = "/content/colab-ai-video-generate.py"
 
 SESSION = "colab-ai-code"
 REMOTE_CONFIG = "/content/colab-ai-config.json"
@@ -59,8 +62,68 @@ PROFILES = {
 }
 COMING = {
     "image": "Geração e edição de imagens (planejada)",
-    "video": "Geração de vídeos (planejada)",
+    }
+
+# Catálogo de vídeo; Hunyuan 1.5 e Wan 2.2-5B com backends implementados.
+VIDEO_MODELS = {
+    "hunyuan15": {
+        "name": "HunyuanVideo-1.5 (8.3B)",
+        "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v / 480p_i2v_step_distilled",
+        "gpu": "L4 (G4 opcional; T4 não recomendado nesta implementação BF16)",
+        "tasks": ("t2v", "i2v"),
+        "memory": ">=14 GB de VRAM com offload (fabricante)",
+        "note": "Implementado 480p; T2V 50 passos; I2V step-distilled 12 passos (pesos separados); sem áudio",
+        "license": "Tencent Hunyuan Community License",
+    },
+    "wan22-5b": {
+        "name": "Wan2.2 TI2V-5B",
+        "repo": "Wan-AI/Wan2.2-TI2V-5B",
+        "gpu": "G4 (L4 24 GB com offload)",
+        "tasks": ("t2v", "i2v"),
+        "memory": ">=24 GB de VRAM com offload (fabricante)",
+        "note": "720p, 24 fps; sem áudio nativo",
+        "license": "Apache-2.0 (verificar termos de uso dos pesos)",
+    },
+    "wan22-14b": {
+        "name": "Wan2.2 T2V/I2V A14B",
+        "repo": "Wan-AI/Wan2.2-T2V-A14B e Wan-AI/Wan2.2-I2V-A14B",
+        "gpu": "G4 ~96 GB",
+        "tasks": ("t2v", "i2v"),
+        "memory": ">=80 GB de VRAM (fabricante)",
+        "note": "480p/720p; maior peso e custo computacional; sem áudio nativo",
+        "license": "Apache-2.0 (verificar termos de uso dos pesos)",
+    },
+    "ltx25": {
+        "name": "LTX-2.5 Fast",
+        "repo": "Lightricks/LTX-2.5",
+        "gpu": "G4 (L4 ~24 GB com offload, sujeito a RAM/disco)",
+        "tasks": ("t2v", "i2v", "audio-video"),
+        "memory": ">=24 GB de VRAM recomendado para Linux na ferramenta oficial",
+        "note": "Vídeo + áudio sincronizados; pesos com acesso condicionado e requisitos de disco elevados",
+        "license": "LTX-2.x Community License (avaliar uso comercial)",
+    },
 }
+
+# Orientação restrita ao launcher claude-colab, não ao comando claude original
+# nem aos arquivos CLAUDE.md do usuário. Não bloqueia tecnicamente ferramentas.
+GLOBAL_VISION_GUIDANCE = (
+    "Ao lidar com imagens locais (incluindo screenshots, referências visuais e "
+    "catalogação de diretórios), primeiro enumere os arquivos com as ferramentas "
+    "locais adequadas e utilize a ferramenta nativa Read do Claude Code para "
+    "abrir cada imagem e inspecionar os pixels. Baseie cada descrição no "
+    "conteúdo realmente observado, não apenas no nome do arquivo. "
+    "Não busque API keys, não use APIs de visão externas, OCR de terceiros ou "
+    "outros provedores para essas tarefas, exceto mediante pedido explícito "
+    "do usuário. Se Read não conseguir abrir uma imagem, explique a limitação "
+    "e não invente o conteúdo. Para diretórios grandes, processe imagens em "
+    "lotes e evite reproduzir dados confidenciais desnecessariamente."
+)
+
+VIDEO_ACTIVE_MODELS = frozenset({"hunyuan15", "wan22-5b"})
+VIDEO_DEFAULT_GPU = {"hunyuan15": "L4", "wan22-5b": "G4"}
+VIDEO_MIN_GIB = {"hunyuan15": 14, "wan22-5b": 21}
+VIDEO_MODEL_IDS = {"hunyuan15": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+                   "wan22-5b": "Wan-AI/Wan2.2-TI2V-5B"}
 
 # Duas engines ASR PT-BR isoladas por Python 3.12, sem cache no Drive.
 ASR_MODELS = {
@@ -607,7 +670,7 @@ def do_start(args) -> None:
     if mode in COMING:
         print(f"{COMING[mode]}. A ferramenta NÃO criará uma GPU para esse modo ainda.")
         return
-    if mode not in PROFILES and mode not in ("voice", "transcribe"):
+    if mode not in PROFILES and mode not in ("voice", "transcribe", "video"):
         raise RuntimeError(f"Modalidade desconhecida: {mode}")
     if mode == "voice":
         if args.voice_model not in ACTIVE_VOICE_MODELS:
@@ -627,6 +690,17 @@ def do_start(args) -> None:
         profile = {"mode": "voice", "model": VOICE_MODELS[args.voice_model],
                    "context": 0, "min_gib": VOICE_MIN_GIB[args.voice_model], "gpu_util": None, "tool_parser": None,
                    "reasoning_parser": None, "effort": None, "voice_variant": args.voice_model}
+    elif mode == "video":
+        if args.video_model not in VIDEO_ACTIVE_MODELS:
+            raise RuntimeError(f"Modelo de vídeo não implementado: {args.video_model}")
+        if args.context is not None:
+            raise RuntimeError("--context é exclusivo da programação")
+        if args.video_model == "hunyuan15" and args.gpu == "T4":
+            raise RuntimeError("HunyuanVideo15 BF16 desta implementação requer L4 ou G4, não T4")
+        profile = {"mode": "video", "model": VIDEO_MODEL_IDS[args.video_model],
+                   "context": 0, "min_gib": VIDEO_MIN_GIB[args.video_model],
+                   "gpu_util": None, "tool_parser": None, "reasoning_parser": None,
+                   "effort": None, "video_variant": args.video_model}
     elif mode == "transcribe":
         if args.asr_model not in ASR_MODELS:
             raise RuntimeError(f"Modelo ASR desconhecido: {args.asr_model}")
@@ -658,6 +732,7 @@ def do_start(args) -> None:
             watchdog_start(state)
             print(f"Já ativa: {msg}. " + ("Use ai-colab voice generate --help" if mode == "voice" else
                                                 "Use ai-colab transcribe --help" if mode == "transcribe" else
+                                                "Use ai-colab video generate --help" if mode == "video" else
                                                 "Use claude-colab para programar."))
             return
     # Verifica requisitos antes de provisionar a GPU.
@@ -671,12 +746,14 @@ def do_start(args) -> None:
     if not state:
         state = {"mode": mode, "model": profile["model"], "session": args.session,
                  "auth": args.auth, "gpu": (args.gpu or (VOICE_DEFAULT_GPU[args.voice_model] if mode == "voice" else
-                                          ASR_DEFAULT_GPU[args.asr_model] if mode == "transcribe" else "G4")), "port": args.port,
+                                          ASR_DEFAULT_GPU[args.asr_model] if mode == "transcribe" else
+                                          VIDEO_DEFAULT_GPU[args.video_model] if mode == "video" else "G4")), "port": args.port,
                  "token": secrets.token_urlsafe(36), "context": profile["context"],
                  "tunnel_pid": None, "serve_pid": None,
                  "watchdog_pid": None, "hf_mode": (args.hf_mode or preferences_read()["hf_mode"]),
                  "voice_variant": profile.get("voice_variant"),
-                 "asr_variant": profile.get("asr_variant")}
+                 "asr_variant": profile.get("asr_variant"),
+                 "video_variant": profile.get("video_variant")}
         state_write(state)
     base = cli_base(state["auth"])
     # `status -s` pode terminar com RC=0 MESMO com "Session not found".
@@ -720,6 +797,7 @@ def do_start(args) -> None:
                "tool_parser": profile["tool_parser"], "reasoning_parser": profile["reasoning_parser"],
                "key": state["token"], "mode": mode, "voice_variant": profile.get("voice_variant"),
                "asr_variant": profile.get("asr_variant"),
+               "video_variant": profile.get("video_variant"),
                "hf_mode": state.get("hf_mode", "fast")}
     config_file = STATE_DIR / "remote-config.json"
     config_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -738,6 +816,12 @@ def do_start(args) -> None:
                     str(ROOT / "remote/transcribe_bootstrap.py"), ASR_BOOTSTRAP_REMOTE], quiet=True)
         run(base + ["upload", "-s", state["session"],
                     str(ROOT / "remote/transcribe_api.py"), ASR_API_REMOTE], quiet=True)
+    elif mode == "video":
+        for source, destination in (("video_bootstrap.py", VIDEO_BOOTSTRAP_REMOTE),
+                                    ("video_api.py", VIDEO_API_REMOTE),
+                                    ("video_generate.py", VIDEO_GENERATOR_REMOTE)):
+            run(base + ["upload", "-s", state["session"],
+                        str(ROOT / "remote" / source), destination], quiet=True)
     print("Iniciando preparação remota em segundo plano (sem bloquear o kernel)...", flush=True)
     # O kernel da Colab CLI pode não devolver execute_reply mesmo após disparar
     # o bootstrap. Antes de declarar falha, confirmar o efeito remoto por
@@ -781,6 +865,7 @@ def do_start(args) -> None:
     print("\nPronto! Execute: " + (
         "ai-colab voice generate --text \"Olá, mundo!\" --output teste.wav" if mode == "voice" else
         "ai-colab transcribe --file audio.mp3 --output transcricao.txt" if mode == "transcribe" else
+        "ai-colab video generate --prompt \"um gato caminhando\" --output ~/Videos/gato.mp4" if mode == "video" else
         "claude-colab  (ou ai-colab claude)"))
 
 
@@ -846,12 +931,54 @@ def do_reconnect(args):
         print(f"Túnel criado; API ainda não disponível ({detail}). Veja diagnostics/logs.")
 
 
+def apply_global_vision_guidance(argv: list[str], env: dict[str, str]) -> list[str]:
+    """Acrescenta instrução global a este launcher sem modificar preferências do Claude.
+
+    Se usuário já definiu --append-system-prompt, mescla em vez de repetir a
+    flag (CLI de terceiros pode aceitar apenas a última ocorrência).
+    """
+    result = list(argv)
+    enabled = env.get("COLAB_AI_VISION_GUIDANCE", "1").strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return result
+    for idx, arg in enumerate(result):
+        if arg == "--append-system-prompt":
+            if idx + 1 >= len(result):
+                # Deixa o Claude reportar o erro do usuário sem ocultá-lo.
+                return result
+            result[idx + 1] += "\n\n" + GLOBAL_VISION_GUIDANCE
+            return result
+        if arg.startswith("--append-system-prompt="):
+            result[idx] += "\n\n" + GLOBAL_VISION_GUIDANCE
+            return result
+    # --append-system-prompt preserva o prompt nativo (em vez de substituí-lo).
+    return ["--append-system-prompt", GLOBAL_VISION_GUIDANCE, *result]
+
+
+def do_video(args):
+    """Catálogo informativo; não provisiona GPU e não afirma gerar vídeos."""
+    if args.action != "models":
+        raise RuntimeError("Subcomando video desconhecido.")
+    if getattr(args, "json", False):
+        print(json.dumps({"stage": "hunyuan15_wan22-5b_available", "models": VIDEO_MODELS},
+                         ensure_ascii=False, indent=2))
+        return
+    print("Módulo vídeo: HunyuanVideo-1.5 e Wan2.2 TI2V-5B implementados (GPU ainda não validada).")
+    print("O catálogo não cria GPU. Para executar, use ai-colab start video --video-model MODELO.\n")
+    for key, info in VIDEO_MODELS.items():
+        print(f"  {key:13} {info['name']} | {','.join(info['tasks'])}")
+        print(f"    GPU sugerida: {info['gpu']} | {info['memory']}")
+        print(f"    {info['note']}")
+        print(f"    Pesos: {info['repo']} | Licença: {info['license']}")
+    print("\nConsulte RESEARCH_VIDEO_2026.md para seleção, requisitos e fontes.")
+
+
 def do_claude(args):
     state = state_read()
     if not state:
         raise RuntimeError("GPU não iniciada. Execute: ai-colab start code")
-    if state.get("mode") in ("voice", "transcribe"):
-        raise RuntimeError("Sessão de áudio ativa. Claude Code exige Code: use stop/start code")
+    if state.get("mode") in ("voice", "transcribe", "video"):
+        raise RuntimeError("Sessão não Code ativa. Claude Code exige Code: use stop/start code")
     good, detail = local_api(state, timeout=3)
     if not good:
         do_reconnect(args)
@@ -894,6 +1021,7 @@ def do_claude(args):
     bypass = os.environ.get("COLAB_AI_SKIP_PERMISSIONS", "1").strip().lower()
     if bypass not in ("0", "false", "no", "off") and "--dangerously-skip-permissions" not in argv:
         argv.insert(0, "--dangerously-skip-permissions")
+    argv = apply_global_vision_guidance(argv, env)
     os.execvpe(claude, [claude, "--model", state["model"], *argv], env)
 
 
@@ -927,9 +1055,13 @@ def do_logs(args):
         raise RuntimeError("A sessão Colab não está ativa. Logs da VM encerrada não ficam disponíveis.")
     filename = {"vllm": "/content/colab-ai-voice.log" if state.get("mode") == "voice" else
                         "/content/colab-ai-asr.log" if state.get("mode") == "transcribe" else
+                        "/content/colab-ai-video.log" if state.get("mode") == "video" else
                         "/content/colab-ai-vllm.log",
                 "bootstrap": "/content/colab-ai-bootstrap.log",
-                "omni": "/content/colab-ai-voice-omni.log"}[args.source]
+                "omni": "/content/colab-ai-voice-omni.log",
+                "video": "/content/colab-ai-video.log"}[args.source]
+    if args.source == 'video' and state.get('mode') != 'video':
+        raise RuntimeError("Log Video somente para sessões Video")
     if args.source == 'omni' and state.get('voice_variant') != 'higgs3':
         raise RuntimeError('Log Omni disponível apenas no perfil Higgs TTS 3')
     with tempfile.TemporaryDirectory(prefix="colab-ai-log-") as temp:
@@ -948,6 +1080,12 @@ def do_test(args):
     state = state_read()
     if not state:
         raise RuntimeError("Sem sessão. Execute ai-colab start code ou start voice primeiro.")
+    if state.get("mode") == "video":
+        ok, message = local_api(state, timeout=args.timeout)
+        if not ok:
+            raise RuntimeError("Video não respondeu ao endpoint de saúde: " + message)
+        print("Video API responde, mas inferência ainda deve ser validada por video generate.")
+        return
     if state.get("mode") == "transcribe":
         if args.file:
             return do_transcribe(argparse.Namespace(file=args.file, output=None, format='txt',
@@ -1016,7 +1154,7 @@ def do_models(args):
         extra = VOICE_NOTES.get(variant, "Qwen3-TTS")
         print(f"  {'voice/'+variant:18} {model} — GPU {VOICE_DEFAULT_GPU[variant]} | {extra}")
     for m, desc in COMING.items():
-        print(f"  {m:13} {desc}")
+        print(f"  {m:13} {desc}" + (" — consulte 'ai-colab video models'" if m == "video" else ""))
 
 
 def do_voice(args):
@@ -1214,15 +1352,183 @@ def do_transcribe(args):
         conn.close()
 
 
+def _video_session() -> dict:
+    state = state_read()
+    if not state or state.get('mode') != 'video':
+        raise RuntimeError('Inicie Video: ai-colab start video --video-model hunyuan15 (ou wan22-5b)')
+    return state
+
+
+def _video_request(state: dict, path: str, *, data: dict | None = None,
+                   timeout: int = 30) -> dict:
+    method = 'POST' if data is not None else 'GET'
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{state.get('port', LOCAL_PORT)}{path}",
+        data=json.dumps(data, ensure_ascii=False).encode('utf-8') if data is not None else None,
+        headers={'Content-Type': 'application/json', 'X-Api-Key': state['token']},
+        method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = resp.read(2 * 1024 * 1024 + 1)
+            if len(payload) > 2 * 1024 * 1024:
+                raise RuntimeError('Resposta do servidor Video acima de 2 MiB')
+            return json.loads(payload)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(1200).decode('utf-8', 'replace')
+        raise RuntimeError(f'Video API HTTP {exc.code}: {detail}') from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f'Video API indisponível: {exc}. Use ai-colab reconnect/status') from exc
+
+
+def _video_job_id(value: str):
+    if not re.fullmatch('[a-f0-9]{32}', value):
+        raise RuntimeError('ID de trabalho inválido (32 caracteres hexadecimais)')
+    return value
+
+
+def _video_output(args):
+    dest = Path(args.output).expanduser().resolve()
+    if dest.suffix.lower() != '.mp4':
+        raise RuntimeError('O arquivo --output precisa terminar com .mp4')
+    if not dest.parent.is_dir():
+        raise RuntimeError(f'Pasta de saída não existe: {dest.parent}')
+    if dest.exists() and not args.overwrite:
+        raise RuntimeError(f'Arquivo existente: {dest}. Use --overwrite se quiser substituir.')
+    return dest
+
+
+def do_video_jobs(args):
+    state = _video_session()
+    result = _video_request(state, '/_colab_ai/video/jobs')
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def do_video_status(args):
+    state = _video_session()
+    job = _video_request(state, f'/_colab_ai/video/jobs/{_video_job_id(args.job_id)}')
+    print(json.dumps(job, ensure_ascii=False, indent=2))
+
+
+def do_video_cancel(args):
+    state = _video_session()
+    job = _video_request(state, f'/_colab_ai/video/jobs/{_video_job_id(args.job_id)}/cancel',
+                         data={})
+    print(f'Job {job["id"]}: {job["status"]}')
+
+
+def do_video_fetch(args):
+    state = _video_session()
+    dest = _video_output(args)
+    jid = _video_job_id(args.job_id)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{state.get('port', LOCAL_PORT)}/_colab_ai/video/jobs/{jid}/file",
+        headers={'X-Api-Key': state['token']}, method='GET')
+    path = None
+    downloaded = 0
+    try:
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            if response.headers.get('Content-Type', '').split(';')[0] != 'video/mp4':
+                raise RuntimeError('Servidor não retornou um MP4')
+            with tempfile.NamedTemporaryFile(prefix='.colab-video-', suffix='.mp4.part',
+                                             dir=dest.parent, delete=False) as temp:
+                path = Path(temp.name)
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    downloaded += len(chunk)
+                    if downloaded > 256 * 1024 * 1024:
+                        raise RuntimeError('MP4 maior que 256 MiB; interrompendo transferência')
+                    temp.write(chunk)
+        if downloaded < 128:
+            raise RuntimeError('MP4 muito curto')
+        with path.open('rb') as fd:
+            if b'ftyp' not in fd.read(16)[4:16]:
+                raise RuntimeError('Arquivo retornado não possui assinatura MP4')
+        os.replace(path, dest)
+        print(f'MP4 salvo: {dest} | {downloaded / 1024**2:.1f} MiB')
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f'Erro ao baixar MP4 HTTP {exc.code}: '
+                           + exc.read(800).decode('utf-8', 'replace')) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f'Conexão interrompida ao baixar MP4: {exc}') from exc
+    finally:
+        if path:
+            path.unlink(missing_ok=True)
+
+
+def do_video_generate(args):
+    import base64
+    state = _video_session()
+    _video_output(args)
+    if not isinstance(args.prompt, str) or not 1 <= len(args.prompt.strip()) <= 4000:
+        raise RuntimeError('Prompt obrigatório de 1 a 4000 caracteres')
+    if not 17 <= args.frames <= 121 or args.frames % 4 != 1:
+        raise RuntimeError('--frames precisa ser 4n+1 entre 17 e 121 (ex.: 49, 73, 97, 121)')
+    if not 0 <= args.seed < 2**32:
+        raise RuntimeError('--seed precisa estar entre 0 e 4294967295')
+    if not 60 <= args.timeout <= 43200:
+        raise RuntimeError('--timeout entre 60 segundos e 12 horas')
+    image_b64 = None
+    if args.image:
+        source = Path(args.image).expanduser().resolve()
+        if not source.is_file() or source.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+            raise RuntimeError('--image deve indicar PNG/JPG/WEBP existente')
+        size = source.stat().st_size
+        if size < 16 or size > 12 * 1024 * 1024:
+            raise RuntimeError('Imagem deve ter no máximo 12 MiB')
+        image_b64 = base64.b64encode(source.read_bytes()).decode('ascii')
+    steps = args.steps if args.steps is not None else (12 if state.get('video_variant') == 'hunyuan15' and image_b64 else 50)
+    if not 1 <= steps <= 60:
+        raise RuntimeError('--steps fora do intervalo 1-60')
+    if state.get('video_variant') == 'hunyuan15' and image_b64 and steps != 12:
+        raise RuntimeError('HunyuanVideo 480p I2V step-distilled requer --steps 12')
+    print('Enviando trabalho ao Colab pelo túnel SSH privado...', flush=True)
+    job = _video_request(state, '/_colab_ai/video/jobs', data={
+        'prompt': args.prompt, 'frames': args.frames, 'steps': steps,
+        'seed': args.seed, 'aspect': args.aspect, 'image_b64': image_b64,
+    }, timeout=100)
+    jid = _video_job_id(job['id'])
+    print(f'Trabalho enviado: {jid} | modelo={state["model"]} | quadros={args.frames} | passos={steps}')
+    print(f'Se a conexão cair: ai-colab video status {jid}; ai-colab video fetch {jid} --output "{args.output}"', flush=True)
+    began = time.monotonic()
+    last = None
+    try:
+        while time.monotonic() - began < args.timeout:
+            time.sleep(10)
+            job = _video_request(state, f'/_colab_ai/video/jobs/{jid}', timeout=30)
+            status = job['status']
+            tail = (job.get('log_tail') or '').strip().splitlines()
+            info = (tail[-1][:150] if tail else 'preparando')
+            digest = (status, info)
+            if digest != last:
+                print(f'[{int(time.monotonic()-began)}s] {status}: {info}', flush=True)
+                last = digest
+            if status == 'completed':
+                do_video_fetch(args.__class__(**{**vars(args), 'job_id': jid}))
+                print(f'Geração concluída em {time.monotonic()-began:.0f}s')
+                return
+            if status in ('failed', 'cancelled'):
+                raise RuntimeError(f'Vídeo {status}: {job.get("error", "")}\n{job.get("log_tail", "")[-1000:]}')
+    except KeyboardInterrupt:
+        print(f'Interrompeu a espera, mas o trabalho pode continuar na VM. ID: {jid}')
+        print(f'Para cancelar: ai-colab video cancel {jid}')
+        return
+    raise RuntimeError(f'Tempo de espera excedido. O job {jid} NÃO foi cancelado. '
+                       f'Use ai-colab video status {jid} e video fetch quando concluir.')
+
+
 def parser_make():
     p = argparse.ArgumentParser(prog="ai-colab", description="Gerenciador multimodal de IA no Colab via CLI + SSH.")
     p.add_argument("--version", action="version", version=f"Colab AI CLI {VERSION}")
     sub = p.add_subparsers(dest="command", required=True)
     a = sub.add_parser("start", help="Inicia uma modalidade")
-    a.add_argument("mode", choices=[*PROFILES, "voice", "transcribe", *COMING], default="code", nargs="?")
-    a.add_argument("--gpu", default=None, help="Code: G4; Voice: L4/T4; Transcribe: T4 Whisper, L4 Qwen")
+    a.add_argument("mode", choices=[*PROFILES, "voice", "transcribe", "video", *COMING], default="code", nargs="?")
+    a.add_argument("--gpu", default=None, help="Code: G4; Voice: L4/T4; ASR: T4/L4; Video: Hunyuan L4, Wan G4")
     a.add_argument("--voice-model", choices=list(ACTIVE_VOICE_MODELS), default="custom",
                    help="custom/design/clone (Qwen), voxcpm2, chatterbox-br, kokoro")
+    a.add_argument("--video-model", choices=sorted(VIDEO_ACTIVE_MODELS), default="hunyuan15",
+                   help="hunyuan15 (L4) ou wan22-5b (G4)")
     a.add_argument("--asr-model", choices=list(ASR_MODELS), default="whisper",
                    help="Whisper Large V3 Turbo (padrão T4) ou Qwen3-ASR (L4)")
     a.add_argument("--hf-mode", choices=["fast", "normal"], help="Sobrescreve o padrão hf_xet para esta sessão")
@@ -1254,11 +1560,40 @@ def parser_make():
     a.set_defaults(func=do_hf)
     sub.add_parser("_watchdog", help=argparse.SUPPRESS).set_defaults(func=do_watchdog)
     sub.add_parser("models", help="Lista perfis e modalidades").set_defaults(func=do_models)
+    video = sub.add_parser("video", help="Geração de vídeos MP4 na GPU Colab")
+    video_sub = video.add_subparsers(dest="action", required=True)
+    v = video_sub.add_parser("models", help="Lista modelos candidatos, GPU, modalidades e licenças")
+    v.add_argument("--json", action="store_true", help="Exibe catálogo em JSON para futura automação")
+    v.set_defaults(func=do_video)
+    v = video_sub.add_parser("generate", help="Gera vídeo do prompt ou imagem e baixa MP4")
+    v.add_argument("--prompt", required=True, help="Cena a gerar")
+    v.add_argument("--image", help="Imagem PNG/JPG/WEBP local para animação (I2V)")
+    v.add_argument("--output", required=True, help="MP4 de saída no Linux")
+    v.add_argument("--frames", type=int, default=49, help="4n+1 quadros (padrão 49)")
+    v.add_argument("--steps", type=int, default=None, help="Passos (Hunyuan T2V 50, I2V 12, Wan 50)")
+    v.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
+    v.add_argument("--seed", type=int, default=42)
+    v.add_argument("--timeout", type=int, default=10800, help="Tempo máximo total em segundos")
+    v.add_argument("--overwrite", action="store_true")
+    v.set_defaults(func=do_video_generate)
+    v = video_sub.add_parser("jobs", help="Lista jobs da sessão (inclusive após perda de conexão)")
+    v.set_defaults(func=do_video_jobs)
+    v = video_sub.add_parser("status", help="Consulta progresso de geração por ID")
+    v.add_argument("job_id", help="ID de geração")
+    v.set_defaults(func=do_video_status)
+    v = video_sub.add_parser("fetch", help="Baixa MP4 de uma geração finalizada")
+    v.add_argument("job_id")
+    v.add_argument("--output", required=True)
+    v.add_argument("--overwrite", action="store_true")
+    v.set_defaults(func=do_video_fetch)
+    v = video_sub.add_parser("cancel", help="Interrompe trabalho de vídeo em andamento")
+    v.add_argument("job_id")
+    v.set_defaults(func=do_video_cancel)
     sub.add_parser("ssh-check", help="Valida chave SSH exclusiva, sem criar GPU").set_defaults(func=do_ssh_check)
     sub.add_parser("diagnostics", help="Logs locais + estado remoto").set_defaults(func=do_diagnostics)
     a = sub.add_parser("logs", help="Últimas linhas do servidor do modelo")
     a.add_argument("--lines", type=int, default=80)
-    a.add_argument("--source", choices=["vllm", "bootstrap", "omni"], default="vllm",
+    a.add_argument("--source", choices=["vllm", "bootstrap", "omni", "video"], default="vllm",
                    help="vllm/voice, bootstrap (instalação) ou omni (backend Higgs)")
     a.set_defaults(func=do_logs)
     a = sub.add_parser("test", help="Executa geração real pela API")

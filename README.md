@@ -1,6 +1,6 @@
-# Colab AI CLI v0.2.8
+# Colab AI CLI v0.3.0
 
-Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. Esta versão adiciona transcrição de áudio em português brasileiro sem alterar os modos anteriores de programação e voz.
+Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. A v0.3.0 implementa o módulo **Video** com HunyuanVideo-1.5 (L4) e Wan2.2 TI2V-5B (G4): T2V/I2V, jobs assíncronos, cancelamento, retomada de download e MP4 local. Mantém a orientação global Read e os backends anteriores de Code, Voice e ASR.
 
 ## Instalação
 
@@ -15,6 +15,119 @@ ai-colab models
 ```
 
 A atualização pode ser instalada sobre a versão anterior. **Não execute outra modalidade enquanto uma GPU estiver ativa**; encerre primeiro usando `ai-colab stop`. O modo Higgs permanece oculto. O cache Google Drive continua desativado; os downloads utilizam `hf_xet` com `HF_XET_HIGH_PERFORMANCE=1` por padrão.
+
+## Claude Code: orientação global de visão (v0.2.9)
+
+O `claude-colab` agora adiciona **`--append-system-prompt`**, uma orientação aplicada em **todos os projetos abertos por esse launcher**. Quando a tarefa envolve capturas de tela ou arquivos de imagem, ele instrui o agente a **preferir a ferramenta `Read`** do Claude Code para observar imagens nativas e não procurar chaves de APIs de visão, serviços externos ou OCR de terceiros, salvo solicitação expressa. A instrução orienta a catalogação em lotes e proíbe descrições inventadas de imagens não lidas.
+
+- Aplica-se somente a `claude-colab` / `ai-colab claude`; **o `claude` original, o `~/.claude/settings.json` e os `CLAUDE.md` dos seus projetos não são modificados**.
+- Usa a flag documentada `--append-system-prompt`, preservando o sistema do Claude Code, ferramentas e políticas originais. Se você passar sua própria flag `--append-system-prompt`, a orientação é mesclada em um único argumento.
+- **Opt-out por sessão:** `COLAB_AI_VISION_GUIDANCE=0 claude-colab`. Também aceita `false`, `no` e `off`.
+- A orientação **não é uma barreira técnica**: agentes podem escolher outras ferramentas; a eficácia deve ser confirmada com um arquivo PNG/JPG real na GPU.
+- Para ver a regra imediatamente, inicie **uma conversa nova** em `claude-colab`. Em conversas retomadas com `--continue`/`--resume`, o Claude Code pode manter o prompt de sistema registrado até a compactação; em versões recentes, `--system-prompt-snapshot off` força a reconstrução. Consulte [a documentação oficial](https://code.claude.com/docs/en/cli-reference#system-prompt-flags-in-resumed-conversations).
+
+```bash
+ai-colab start code --gpu G4 --context 262144
+claude-colab
+# Dentro da sessão, peça para catalogar imagens de uma pasta normalmente.
+
+# Opcional: desativar somente a orientação visual nessa execução:
+COLAB_AI_VISION_GUIDANCE=0 claude-colab
+```
+
+## Vídeos: HunyuanVideo-1.5 e Wan2.2 TI2V-5B (v0.3.0)
+
+**Estão implementados os dois backends e a integração com a CLI, mas nenhum foi executado ainda numa GPU real nesta versão.** O primeiro teste de cada um pode revelar incompatibilidades de dependências, VRAM, RAM ou espaço no Colab. `ai-colab video models` lista também Wan A14B e LTX 2.5 como candidatos **não implementados**.
+
+| Perfil | GPU para começar | Resolução / FPS | Texto→vídeo | Imagem→vídeo |
+|---|---|---|---|---|
+| `hunyuan15` | L4 | 480p, 24 fps | `HunyuanVideo15Pipeline` (50 passos sugeridos) | `HunyuanVideo15ImageToVideoPipeline` step-distilled (12 passos) |
+| `wan22-5b` | G4 | 1280×704 ou 704×1280, 24 fps | Mesmo checkpoint TI2V-5B | Mesmo checkpoint com `--image` |
+
+O Hunyuan usa **dois conjuntos de pesos distintos** no Hugging Face (`hunyuanvideo-community`); seu checkpoint Diffusers 480p T2V pode ocupar **mais de 50 GB** em disco. O Wan usa o repositório oficial, clonando o código e transferindo `Wan-AI/Wan2.2-TI2V-5B` no primeiro trabalho. Sem cache permanente no Google Drive, download e instalação podem se repetir após desligar a VM. Ambos geram **MP4 sem áudio**.
+
+### 1. Instalar e iniciar Hunyuan (L4)
+
+```bash
+# Na pasta extraída do ZIP, primeiro instale:
+bash install.sh
+ai-colab --version
+
+# Iniciar servidor de jobs (os pesos são baixados na primeira geração):
+ai-colab start video --video-model hunyuan15 --gpu L4 --wait 1800
+
+# Primeiro teste curto: 49 frames (aprox. 2 segundos a 24 fps):
+mkdir -p ~/Videos
+ai-colab video generate \
+  --prompt "A pequena nave futurista cruza um campo ao pôr do sol, câmera cinematográfica" \
+  --frames 49 --steps 50 --aspect 16:9 \
+  --output ~/Videos/hunyuan-teste.mp4
+```
+
+Para **animar uma imagem** com o mesmo perfil Hunyuan:
+
+```bash
+ai-colab video generate \
+  --image ~/Pictures/foto.png \
+  --prompt "Movimento sutil de câmera, vento suave, movimento natural" \
+  --frames 49 --steps 12 --output ~/Videos/hunyuan-animacao.mp4
+```
+
+A I2V Hunyuan é a versão **step-distilled** e exige exatamente 12 passos; os pixels da imagem determinam a proporção de entrada. **Usar Hunyuan em T4 não é recomendado neste projeto** (a implementação usa BF16; selecione L4/G4). Além da VRAM, pode precisar de muita RAM e espaço em disco para checkpoint e offload de CPU. Evite usar em uma instância com pouco armazenamento. O modelo possui termos de licença da Tencent que precisam ser considerados para uso comercial.
+
+### 2. Iniciar Wan2.2 TI2V-5B (G4)
+
+Ao trocar de perfil, encerre a GPU anterior para evitar conflito:
+
+```bash
+ai-colab stop
+ai-colab start video --video-model wan22-5b --gpu G4 --wait 1800
+
+ai-colab video generate \
+  --prompt "Um beija-flor azul voa entre flores ao amanhecer, luz natural" \
+  --frames 49 --steps 50 --aspect 16:9 \
+  --output ~/Videos/wan-teste.mp4
+```
+
+Para **imagem→vídeo** no mesmo checkpoint:
+
+```bash
+ai-colab video generate \
+  --image ~/Pictures/referencia.jpg \
+  --prompt "A câmera se aproxima lentamente, objetos com movimentos sutis" \
+  --frames 49 --steps 50 --aspect 9:16 \
+  --output ~/Videos/wan-animacao.mp4
+```
+
+Wan usa `--offload_model`, `--convert_model_dtype` e `--t5_cpu` automaticamente quando a GPU tem menos de 80 GiB; na G4 de ~96 GB, tenta usar os pesos diretamente na GPU. A opção `--aspect` define 1280×704 ou 704×1280, mas, em I2V, a ferramenta oficial pode ajustar a proporção conforme a imagem. Uma L4 com offload é possível em teoria, mas é significativamente mais exigente; comece pela G4.
+
+### 3. Acompanhar e recuperar trabalhos
+
+O cliente imprime o identificador do trabalho imediatamente após o envio; durante a geração, consulta status a cada 10 segundos, sem manter uma conexão HTTP aberta. Se você pressionar Ctrl+C **na espera da CLI**, o servidor remoto poderá continuar gerando vídeo.
+
+```bash
+ai-colab video jobs                  # listar todos os jobs na sessão
+ai-colab video status ID_DO_TRABALHO # estado e fim dos logs da geração
+ai-colab video fetch ID_DO_TRABALHO --output ~/Videos/resultado.mp4
+ai-colab video cancel ID_DO_TRABALHO # interromper uma geração ativa
+```
+
+Se o túnel SSH cair, execute `ai-colab reconnect` e consulte `ai-colab video jobs` novamente. **Baixe o MP4 antes de encerrar a GPU**; os vídeos ficam no diretório efêmero `/content/colab-ai-videos/` e desaparecem com o runtime. O histórico em memória dos jobs não sobrevive à reinicialização do worker, mesmo se a VM permanecer ativa.
+
+Para diagnóstico:
+
+```bash
+ai-colab test # verifica worker/health, não executa a geração de vídeo
+ai-colab logs --source bootstrap --lines 150
+ai-colab logs --source video --lines 150
+ai-colab stats
+```
+
+O status de cada job inclui o trecho final de seus logs. **Não reinicie automaticamente em caso de erro**: primeiro consulte logs e disponibilidade de VRAM, RAM e disco. Se a CLI do Google retornar HTTP 503 na etapa `colab new`, os scripts de vídeo nem terão iniciado: a capacidade de criar GPU pelo navegador não garante que a CLI oficial consiga provisionar a mesma GPU.
+
+**Limites e privacidade:** somente um job ativo por VM; PNG/JPG/WEBP de até 12 MiB; 17–121 frames no formato `4n+1`, máximo de 60 passos, MP4 até 256 MiB, 8 jobs por sessão. O envio da imagem e o download do vídeo usam o túnel SSH autenticado, com portas remotas em `127.0.0.1`. A imagem temporária é excluída após a geração; o MP4 permanece na VM até encerrar a sessão. O comando oficial do Wan pode incluir o *prompt* textual nos logs do job; não utilize dados confidenciais sem avaliar essa retenção e os termos da plataforma.
+
+Fontes de implementação: [Hunyuan 1.5 Diffusers](https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5#usage-with-diffusers), [checkpoint I2V destilado](https://huggingface.co/hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v_step_distilled), [Wan 2.2 oficial](https://github.com/Wan-Video/Wan2.2), [Wan TI2V-5B](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B).
 
 ## Transcrição: dois perfis
 
@@ -78,13 +191,14 @@ Se a inicialização terminar em erro, a GPU **não é automaticamente desligada
 
 ## Segurança e privacidade
 
-A conexão remota usa exclusivamente um túnel SSH autenticado, associado à sessão da ferramenta; a porta de inferência escuta somente em `127.0.0.1` na VM. A entrada é transferida em blocos. Arquivos temporários de áudio no Colab são excluídos ao concluir a requisição, inclusive quando há erro tratado, e não são gravados textos completos em logs de aplicação. Isso **não elimina** os riscos inerentes ao processamento em nuvem ou às políticas da plataforma. Para áudios confidenciais, obtenha autorização, avalie a necessidade de usar Colab e garanta um tratamento compatível com suas obrigações profissionais e legais.
+A conexão remota usa exclusivamente um túnel SSH autenticado, associado à sessão da ferramenta; a porta de inferência escuta somente em `127.0.0.1` na VM. Arquivos ASR são transferidos em blocos; vídeos são baixados via streaming. Arquivos temporários de áudio no Colab são excluídos ao concluir a requisição, inclusive quando há erro tratado, e não são gravados textos completos em logs ASR; **o Wan pode registrar prompts de vídeo em seus logs de inferência**. Isso **não elimina** os riscos inerentes ao processamento em nuvem ou às políticas da plataforma. Para áudios confidenciais, obtenha autorização, avalie a necessidade de usar Colab e garanta um tratamento compatível com suas obrigações profissionais e legais.
 
 ## Instalação técnica
 
 - Cliente Linux: `ai_colab.py` (biblioteca padrão).
-- Inicialização remota: `remote/launch.py` → `remote/transcribe_bootstrap.py`.
+- Inicialização remota: `remote/launch.py` → `remote/transcribe_bootstrap.py` / `remote/video_bootstrap.py`.
 - Serviço ASR: `remote/transcribe_api.py` com Python **3.12 isolado** por modelo.
+- Serviço Video: `remote/video_api.py`, `remote/video_generate.py`, Python isolado em venv com PyTorch da VM; tarefas assíncronas e HTTP privado.
 - API privada: `POST /_colab_ai/transcribe`, com streaming de upload no proxy autenticado.
 - Saída: estrutura JSON contendo texto, idioma e segmentos reais; o cliente salva TXT/SRT/JSON no disco Linux.
 

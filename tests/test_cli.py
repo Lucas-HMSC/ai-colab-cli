@@ -15,7 +15,7 @@ class CliTests(TestCase):
     def test_mode_catalog(self):
         self.assertEqual(app.PROFILES['code']['model'], 'Qwen/Qwen3.8-27B-FP8')
         self.assertIn('code-next', app.PROFILES)
-        self.assertIn('video', app.COMING)
+        self.assertNotIn('video', app.COMING)
         self.assertNotIn('video', app.PROFILES)
 
     def test_context_default_increases_to_131k(self):
