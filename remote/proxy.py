@@ -58,11 +58,11 @@ def process_alive(pid):
         return False
 
 
-def collect_metrics():
+def collect_metrics(deep=False):
     """Read hardware, not inferred estimates. Bounded runtime/timeout."""
     output = {"timestamp": time.time()}
     try:
-        cmd = ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.total,memory.used,memory.free,temperature.gpu",
+        cmd = ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.total,memory.used,memory.free,temperature.gpu,driver_version",
                "--format=csv,noheader,nounits"]
         p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
         if p.returncode == 0 and p.stdout.strip():
@@ -70,9 +70,40 @@ def collect_metrics():
             if len(parts) >= 6:
                 output["gpu"] = {"name": parts[0], "utilization_pct": float(parts[1]),
                                  "memory_total_mib": float(parts[2]), "memory_used_mib": float(parts[3]),
-                                 "memory_free_mib": float(parts[4]), "temperature_c": float(parts[5])}
+                                 "memory_free_mib": float(parts[4]), "temperature_c": float(parts[5]),
+                                 "driver_version": parts[6] if len(parts) > 6 else None, "timestamp": time.time()}
     except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
+    try:
+        p = subprocess.run(['nvidia-smi', '--query-compute-apps=pid,process_name,used_gpu_memory',
+                            '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=3)
+        if p.returncode == 0:
+            processes = []
+            for line in p.stdout.splitlines()[:20]:
+                bits = [part.strip() for part in line.split(',')]
+                if len(bits) >= 3:
+                    try:
+                        processes.append({'pid': int(bits[0]), 'process_name': bits[1][:100],
+                                          'memory_used_mib': float(bits[2])})
+                    except ValueError:
+                        continue
+            output['gpu_processes'] = processes
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if deep:
+        candidate = Path('/content/colab-ai-video-venv/bin/python') if VIDEO_MODE else Path('/usr/bin/python3')
+        python = str(candidate) if candidate.exists() else 'python3'
+        code = ('import json,torch; a=torch.cuda.is_available(); '
+                'print(json.dumps({"torch_version":torch.__version__, "cuda_version":torch.version.cuda, '
+                '"cuda_available":a, "device":torch.cuda.get_device_name(0) if a else None}))')
+        try:
+            check = subprocess.run([python, '-c', code], capture_output=True, text=True, timeout=11)
+            if check.returncode == 0:
+                output['torch'] = json.loads(check.stdout.strip())
+            else:
+                output['torch'] = {'error': (check.stderr or 'Torch indisponível')[-300:]}
+        except (OSError, subprocess.TimeoutExpired, ValueError) as err:
+            output['torch'] = {'error': type(err).__name__ + ': ' + str(err)[:160]}
     try:
         m = {}
         for line in Path("/proc/meminfo").read_text().splitlines():
@@ -90,7 +121,7 @@ def collect_metrics():
     return output
 
 
-def vllm_status(include_metrics=False):
+def vllm_status(include_metrics=False, deep=False):
     try:
         pid = int(PID_FILE.read_text().strip())
     except (OSError, ValueError):
@@ -165,7 +196,7 @@ def vllm_status(include_metrics=False):
               "bootstrap_pid": bootstrap_pid, "bootstrap_alive": bootstrap_alive,
               "bootstrap_log_tail": bootstrap_log_tail, "mode": "voice" if VOICE_MODE else "transcribe" if ASR_MODE else "video" if VIDEO_MODE else "code"}
     if include_metrics:
-        status["metrics"] = collect_metrics()
+        status["metrics"] = collect_metrics(deep=deep)
     return status
 
 
@@ -196,7 +227,7 @@ def make_handler(api_key):
                 self.send_error(401, "Chave inválida")
                 return
             if self.command == "GET" and parsed.path == "/_colab_ai/status":
-                data = json.dumps(vllm_status(include_metrics=("metrics=1" in parsed.query))).encode("utf-8")
+                data = json.dumps(vllm_status(include_metrics=("metrics=1" in parsed.query), deep=("deep=1" in parsed.query))).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

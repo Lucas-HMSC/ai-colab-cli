@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -391,13 +391,13 @@ def launch_process(cmd: list[str], logname: str) -> int:
     return p.pid
 
 
-def runtime_status(state: dict, timeout: int = 5, *, metrics: bool = False) -> tuple[bool, dict | str]:
+def runtime_status(state: dict, timeout: int = 5, *, metrics: bool = False, deep: bool = False) -> tuple[bool, dict | str]:
     """Consulta status autenticado do servidor, mesmo antes do vLLM estar pronto.
 
     O endpoint do proxy e o túnel continuam disponíveis durante downloads e
     carregamento. Assim é possível diferenciar demora, falha e API pronta.
     """
-    url = f"http://127.0.0.1:{state.get('port', LOCAL_PORT)}/_colab_ai/status" + ("?metrics=1" if metrics else "")
+    url = f"http://127.0.0.1:{state.get('port', LOCAL_PORT)}/_colab_ai/status" + ("?metrics=1" + ("&deep=1" if deep else "") if metrics else "")
     req = urllib.request.Request(url, headers={"X-Api-Key": state.get("token", "")})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -616,6 +616,56 @@ def stats_text(state: dict) -> str:
     if disk:
         result.append("Disco /content livre: " + _human_gib(disk.get('free_bytes', 0)))
     return "\n".join(result)
+
+
+def do_gpu_status(args):
+    """Lê métricas pelo túnel autenticado EXISTENTE, sem colab ssh."""
+    state = state_read()
+    if not state:
+        raise RuntimeError("Nenhuma sessão iniciada. Use ai-colab start antes de consultar GPU.")
+    if args.watch is not None and args.watch < 3:
+        raise RuntimeError("--watch precisa ser >= 3 segundos")
+    try:
+        while True:
+            ok, response = runtime_status(state, timeout=15 if args.deep else 7,
+                                          metrics=True, deep=args.deep)
+            if not ok:
+                raise RuntimeError("Túnel/API indisponível: " + str(response) +
+                                   ". Verifique ai-colab status ou ai-colab reconnect.")
+            if args.json:
+                print(json.dumps(response.get('metrics', {}), ensure_ascii=False, indent=2), flush=True)
+            else:
+                print("=== GPU remota (conexão SSH existente) ===", flush=True)
+                print(stats_text_from_snapshot(response), flush=True)
+            if args.watch is None:
+                break
+            time.sleep(args.watch)
+    except KeyboardInterrupt:
+        print("Monitor de GPU encerrado; a sessão Colab continua ativa.")
+
+
+def stats_text_from_snapshot(snapshot):
+    met = snapshot.get('metrics') or {}
+    lines = ["Estado: " + str(snapshot.get('phase', 'desconhecido'))]
+    gpu = met.get('gpu') or {}
+    if gpu:
+        lines += [f"GPU: {gpu.get('name','?')} | uso {gpu.get('utilization_pct', 0):g}% "
+                  f"| VRAM {gpu.get('memory_used_mib',0)/1024:.1f}/{gpu.get('memory_total_mib',0)/1024:.1f} GiB "
+                  f"| temperatura {gpu.get('temperature_c',0):g}°C"]
+        if gpu.get('driver_version'):
+            lines += [f"Driver NVIDIA: {gpu['driver_version']}"]
+    else:
+        lines.append("nvidia-smi não disponibilizou métricas; consulte logs/status.")
+    if met.get('torch'):
+        t = met['torch']
+        lines.append(f"PyTorch: {t.get('torch_version', '?')} | CUDA do torch: {t.get('cuda_version', '?')} "
+                     f"| disponível: {t.get('cuda_available', False)} | dispositivo: {t.get('device', '?')}")
+        if t.get('error'):
+            lines.append('Diagnóstico PyTorch: ' + str(t['error']))
+    for proc in met.get('gpu_processes', []):
+        lines.append(f"Processo GPU PID {proc.get('pid','?')} | {proc.get('memory_used_mib','?')} MiB | "
+                     f"{proc.get('process_name','?')}")
+    return "\n".join(lines)
 
 
 def do_stats(args):
@@ -1457,6 +1507,42 @@ def do_video_fetch(args):
             path.unlink(missing_ok=True)
 
 
+def video_dimensions(variant: str, aspect: str, size: str | None, has_image: bool) -> tuple[int, int]:
+    """Define dimensões exatas suportadas por cada engine antes de enviar job."""
+    defaults = {'hunyuan15': {'9:16': (480, 848), '16:9': (848, 480)},
+                'wan22-5b': {'9:16': (704, 1280), '16:9': (1280, 704)}}
+    if variant not in defaults:
+        raise RuntimeError('Modelo de vídeo inválido')
+    w, h = defaults[variant][aspect]
+    if size:
+        match = re.fullmatch(r'(\d{2,4})[xX](\d{2,4})', size)
+        if not match:
+            raise RuntimeError('--size deve ser LARGURAxALTURA (ex.: 480x848)')
+        w, h = map(int, match.groups())
+    if (w < 256 or h < 256 or w % 16 or h % 16):
+        raise RuntimeError('Dimensões devem ser >=256 e múltiplas de 16')
+    if (w < h) != (aspect == '9:16'):
+        raise RuntimeError('--size conflita com --aspect; ajuste ambos')
+    if variant == 'wan22-5b':
+        if (w,h) != defaults[variant][aspect]:
+            raise RuntimeError('Wan TI2V-5B suporta apenas 704x1280 (9:16) ou 1280x704 (16:9)')
+    elif w*h > 848*480 or max(w,h) > 1024:
+        raise RuntimeError('Hunyuan 480p: resolução acima do limite seguro deste checkpoint')
+    return w,h
+
+
+def video_steps(variant: str, has_image: bool, steps: int | None, quality: str) -> int:
+    if variant == 'hunyuan15' and has_image:
+        if steps is not None and steps != 12:
+            raise RuntimeError('Hunyuan I2V step-distilled exige --steps 12')
+        return 12
+    if steps is not None:
+        if not 1 <= steps <= 60:
+            raise RuntimeError('--steps fora do intervalo 1-60')
+        return steps
+    return {'draft': 20, 'standard': 32, 'high': 50}[quality]
+
+
 def do_video_generate(args):
     import base64
     state = _video_session()
@@ -1478,18 +1564,17 @@ def do_video_generate(args):
         if size < 16 or size > 12 * 1024 * 1024:
             raise RuntimeError('Imagem deve ter no máximo 12 MiB')
         image_b64 = base64.b64encode(source.read_bytes()).decode('ascii')
-    steps = args.steps if args.steps is not None else (12 if state.get('video_variant') == 'hunyuan15' and image_b64 else 50)
-    if not 1 <= steps <= 60:
-        raise RuntimeError('--steps fora do intervalo 1-60')
-    if state.get('video_variant') == 'hunyuan15' and image_b64 and steps != 12:
-        raise RuntimeError('HunyuanVideo 480p I2V step-distilled requer --steps 12')
+    variant = state.get('video_variant')
+    w, h = video_dimensions(variant, args.aspect, args.size, bool(image_b64))
+    steps = video_steps(variant, bool(image_b64), args.steps, args.quality)
     print('Enviando trabalho ao Colab pelo túnel SSH privado...', flush=True)
     job = _video_request(state, '/_colab_ai/video/jobs', data={
         'prompt': args.prompt, 'frames': args.frames, 'steps': steps,
-        'seed': args.seed, 'aspect': args.aspect, 'image_b64': image_b64,
+        'seed': args.seed, 'aspect': args.aspect, 'width': w, 'height': h,
+        'offload': args.offload, 'image_fit': args.image_fit, 'image_b64': image_b64,
     }, timeout=100)
     jid = _video_job_id(job['id'])
-    print(f'Trabalho enviado: {jid} | modelo={state["model"]} | quadros={args.frames} | passos={steps}')
+    print(f'Trabalho enviado: {jid} | modelo={state["model"]} | {w}x{h} | quadros={args.frames} | passos={steps} | offload={args.offload}')
     print(f'Se a conexão cair: ai-colab video status {jid}; ai-colab video fetch {jid} --output "{args.output}"', flush=True)
     began = time.monotonic()
     last = None
@@ -1500,9 +1585,12 @@ def do_video_generate(args):
             status = job['status']
             tail = (job.get('log_tail') or '').strip().splitlines()
             info = (tail[-1][:150] if tail else 'preparando')
-            digest = (status, info)
+            g = job.get('gpu') or {}
+            gpu_note = (f" | GPU {g.get('utilization_pct', 0):g}% | VRAM {g.get('memory_used_mib', 0)/1024:.1f} GiB"
+                        if g else '')
+            digest = (status, info, int(g.get('timestamp',0))//30)
             if digest != last:
-                print(f'[{int(time.monotonic()-began)}s] {status}: {info}', flush=True)
+                print(f'[{int(time.monotonic()-began)}s] {status}: {info}{gpu_note}', flush=True)
                 last = digest
             if status == 'completed':
                 do_video_fetch(args.__class__(**{**vars(args), 'job_id': jid}))
@@ -1548,6 +1636,14 @@ def parser_make():
     a.add_argument("--remote", action="store_true")
     a.set_defaults(func=do_status)
     sub.add_parser("reconnect", help="Restaura somente túnel SSH").set_defaults(func=do_reconnect)
+    gpu = sub.add_parser('gpu', help='Diagnóstico da GPU pelo túnel atual (sem nova sessão SSH)')
+    gpu_sub = gpu.add_subparsers(dest='gpu_action', required=True)
+    gs = gpu_sub.add_parser('status', help='Consulta nome, VRAM, uso e processos da GPU')
+    gs.add_argument('--json', action='store_true', help='Métricas em JSON')
+    gs.add_argument('--deep', action='store_true', help='Inclui teste PyTorch no worker (mais demorado)')
+    gs.add_argument('--watch', type=int, nargs='?', const=10, default=None, metavar='SEGUNDOS',
+                    help='Atualiza a cada N segundos (mínimo 3; Ctrl+C encerra apenas o monitor)')
+    gs.set_defaults(func=do_gpu_status)
     sub.add_parser("stats", help="VRAM, GPU, RAM, disco e unidades").add_argument("--usage", action="store_true")
     sub.choices["stats"].set_defaults(func=do_stats)
     a = sub.add_parser("monitor", help="Monitora recursos continuamente (não inicia GPU)")
@@ -1571,7 +1667,16 @@ def parser_make():
     v.add_argument("--output", required=True, help="MP4 de saída no Linux")
     v.add_argument("--frames", type=int, default=49, help="4n+1 quadros (padrão 49)")
     v.add_argument("--steps", type=int, default=None, help="Passos (Hunyuan T2V 50, I2V 12, Wan 50)")
-    v.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
+    v.add_argument("--aspect", choices=["16:9", "9:16"], default="9:16",
+                   help="Formato do vídeo (padrão vertical 9:16)")
+    v.add_argument('--size', metavar='LARGURAxALTURA',
+                   help='Hunyuan: custom até 480p; Wan: 704x1280 ou 1280x704')
+    v.add_argument('--quality', choices=['draft','standard','high'], default='high',
+                   help='Define 20, 32 ou 50 passos quando --steps não é informado')
+    v.add_argument('--offload', choices=['auto','on','off'], default='auto',
+                   help='offload automático por VRAM (forçar off exige >=80 GiB)')
+    v.add_argument('--image-fit', choices=['cover','contain'], default='cover',
+                   help='Imagem de referência: cobrir recortando ou conter com bordas')
     v.add_argument("--seed", type=int, default=42)
     v.add_argument("--timeout", type=int, default=10800, help="Tempo máximo total em segundos")
     v.add_argument("--overwrite", action="store_true")

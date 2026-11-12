@@ -27,6 +27,59 @@ MAX_BODY = 17 * 1024 * 1024
 JOB_PATH = re.compile(r'^/_colab_ai/video/jobs/([a-f0-9]{32})(/file|/cancel)?$')
 
 
+def validate_size(variant, aspect, width, height):
+    sizes = {'hunyuan15': {'9:16': (480,848), '16:9': (848,480)},
+             'wan22-5b': {'9:16': (704,1280), '16:9': (1280,704)}}
+    if aspect not in ('9:16', '16:9'):
+        raise ValueError('Aspecto inválido')
+    default_w, default_h = sizes[variant][aspect]
+    w = default_w if width is None else width
+    h = default_h if height is None else height
+    if type(w) is not int or type(h) is not int or min(w,h) < 256 or w % 16 or h % 16:
+        raise ValueError('Resolução inválida: largura e altura >=256, múltiplas de 16')
+    if (w < h) != (aspect == '9:16'):
+        raise ValueError('Dimensões incompatíveis com formato do vídeo')
+    if variant == 'wan22-5b' and (w,h) != (default_w,default_h):
+        raise ValueError('Wan TI2V-5B: somente 704x1280 ou 1280x704')
+    if variant == 'hunyuan15' and (w*h > 480*848 or max(w,h)>1024):
+        raise ValueError('Hunyuan 480p: acima dos limites do checkpoint')
+    return w,h
+
+
+def gpu_sample():
+    """Snapshot leve: sem PyTorch nem novo SSH; pode falhar durante download."""
+    try:
+        output = subprocess.run(['nvidia-smi',
+            '--query-gpu=name,utilization.gpu,memory.total,memory.used',
+            '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=3)
+        if output.returncode != 0 or not output.stdout.strip():
+            return None
+        a = [x.strip() for x in output.stdout.splitlines()[0].split(',')]
+        return {'name': a[0], 'utilization_pct': float(a[1]),
+                'memory_total_mib': float(a[2]), 'memory_used_mib': float(a[3]),
+                'timestamp': time.time()}
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def monitor_job_gpu(job, stop_event):
+    while not stop_event.is_set():
+        sample = gpu_sample()
+        if sample:
+            with GUARD:
+                job['gpu'] = sample
+                job['gpu_samples'] = job.get('gpu_samples', 0) + 1
+                job['peak_vram_mib'] = max(job.get('peak_vram_mib', 0), sample['memory_used_mib'])
+            try:
+                with job['log'].open('ab') as log:
+                    log.write((f"[GPU] {sample['utilization_pct']:.0f}% | "
+                               f"VRAM {sample['memory_used_mib']/1024:.1f}/"
+                               f"{sample['memory_total_mib']/1024:.1f} GiB\n").encode('utf-8'))
+            except OSError:
+                pass
+        stop_event.wait(30)
+
+
 def check_request(request):
     if not isinstance(request, dict):
         raise ValueError('Metadados de vídeo inválidos')
@@ -34,7 +87,11 @@ def check_request(request):
     frames = request.get('frames', 49)
     seed = request.get('seed', 42)
     image_b64 = request.get('image_b64')
-    aspect = request.get('aspect', '16:9')
+    aspect = request.get('aspect', '9:16')
+    width = request.get('width')
+    height = request.get('height')
+    offload = request.get('offload', 'auto')
+    image_fit = request.get('image_fit', 'cover')
     steps = request.get('steps', 12 if (VARIANT == 'hunyuan15' and image_b64) else 50)
     if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 4000:
         raise ValueError('Prompt obrigatório (1-4000 caracteres)')
@@ -46,8 +103,11 @@ def check_request(request):
         raise ValueError('Hunyuan I2V step-distilled exige 12 passos')
     if type(seed) is not int or not 0 <= seed < 2**32:
         raise ValueError('Seed inválido')
-    if aspect not in ('16:9', '9:16'):
-        raise ValueError('Aspecto inválido')
+    width,height = validate_size(VARIANT, aspect, width, height)
+    if offload not in ('auto','on','off'):
+        raise ValueError('Offload inválido')
+    if image_fit not in ('cover','contain'):
+        raise ValueError('image_fit inválido')
     image = None
     extension = None
     if image_b64 is not None:
@@ -68,7 +128,8 @@ def check_request(request):
         else:
             raise ValueError('Imagem deve ser PNG/JPG/WEBP válida')
     return {'prompt': prompt.strip(), 'frames': frames, 'steps': steps,
-            'aspect': aspect, 'seed': seed, 'image': image, 'extension': extension}
+            'aspect': aspect, 'width': width, 'height': height, 'offload': offload,
+            'image_fit': image_fit, 'seed': seed, 'image': image, 'extension': extension}
 
 
 def _public_status(job):
@@ -82,6 +143,12 @@ def _public_status(job):
             out['log_tail'] = log.read().decode('utf-8', 'replace')[-900:]
     except OSError:
         out['log_tail'] = ''
+    out['generation'] = job.get('generation', {})
+    if job.get('gpu'):
+        out['gpu'] = job['gpu']
+        out['gpu_samples'] = job.get('gpu_samples', 0)
+        out['peak_vram_mib'] = job.get('peak_vram_mib', 0)
+    out['elapsed_seconds'] = round(time.time() - job['created_at']) if job['status'] in ('running','queued') else job.get('elapsed_seconds')
     if job.get('error'):
         out['error'] = job['error']
     return out
@@ -97,10 +164,14 @@ def _run(job, params):
     cmd = [sys.executable, '-u', '/content/colab-ai-video-generate.py',
            '--variant', VARIANT, '--prompt', params['prompt'],
            '--frames', str(params['frames']), '--steps', str(params['steps']),
-           '--aspect', params['aspect'], '--seed', str(params['seed']),
+           '--aspect', params['aspect'], '--width', str(params['width']),
+           '--height', str(params['height']), '--offload', params['offload'],
+           '--image-fit', params['image_fit'], '--seed', str(params['seed']),
            '--output', str(job['output'])]
     if image_file:
         cmd += ['--image', str(image_file)]
+    stop_metrics = threading.Event()
+    monitor = threading.Thread(target=monitor_job_gpu, args=(job, stop_metrics), daemon=True)
     try:
         with job['log'].open('ab') as log:
             with GUARD:
@@ -112,6 +183,7 @@ def _run(job, params):
                                         stdout=log, stderr=subprocess.STDOUT,
                                         close_fds=True, start_new_session=True)
                 job['process'] = proc
+            monitor.start()
             code = proc.wait()
         with GUARD:
             if job['status'] in ('cancelled', 'cancelling'):
@@ -141,6 +213,8 @@ def _run(job, params):
     finally:
         if image_file:
             image_file.unlink(missing_ok=True)
+        stop_metrics.set()
+        job['elapsed_seconds'] = round(time.time() - job['created_at'])
         print(f'Video job {job["id"]}: {job["status"]}', flush=True)
 
 
@@ -220,7 +294,9 @@ def handler_factory():
                 job = {'id': jid, 'status': 'queued', 'model': MODEL,
                        'created_at': now, 'updated_at': now,
                        'output': folder / 'video.mp4', 'log': folder / 'job.log',
-                       'image': image_file, 'process': None}
+                       'image': image_file, 'process': None,
+                       'generation': {k:params[k] for k in ('aspect','width','height','frames','steps','offload','image_fit')},
+                       'gpu': None, 'gpu_samples': 0, 'peak_vram_mib': 0}
                 with GUARD:
                     if any(j['status'] in ('queued','running') for j in JOBS.values()):
                         return self.json_response(409, {'error': 'Já existe job ativo'})

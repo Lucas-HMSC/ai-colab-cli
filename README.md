@@ -1,6 +1,6 @@
-# Colab AI CLI v0.3.0
+# Colab AI CLI v0.3.1
 
-Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. A v0.3.0 implementa o módulo **Video** com HunyuanVideo-1.5 (L4) e Wan2.2 TI2V-5B (G4): T2V/I2V, jobs assíncronos, cancelamento, retomada de download e MP4 local. Mantém a orientação global Read e os backends anteriores de Code, Voice e ASR.
+Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. A v0.3.1 melhora a modalidade **Video** com HunyuanVideo-1.5 (L4) e Wan2.2 TI2V-5B (G4): T2V/I2V, jobs assíncronos, cancelamento, retomada de download e MP4 local. Mantém a orientação global Read e os backends anteriores de Code, Voice e ASR.
 
 ## Instalação
 
@@ -35,9 +35,9 @@ claude-colab
 COLAB_AI_VISION_GUIDANCE=0 claude-colab
 ```
 
-## Vídeos: HunyuanVideo-1.5 e Wan2.2 TI2V-5B (v0.3.0)
+## Vídeos: HunyuanVideo-1.5 e Wan2.2 TI2V-5B (v0.3.1)
 
-**Estão implementados os dois backends e a integração com a CLI, mas nenhum foi executado ainda numa GPU real nesta versão.** O primeiro teste de cada um pode revelar incompatibilidades de dependências, VRAM, RAM ou espaço no Colab. `ai-colab video models` lista também Wan A14B e LTX 2.5 como candidatos **não implementados**.
+**Os dois backends estão implementados; o Hunyuan v0.3.0 já concluiu uma geração real de 49 quadros e 50 passos no ambiente do usuário em 2.025 segundos (33 min e 45 s, incluindo o preparo e os downloads). As alterações da v0.3.1 não foram testadas ainda em GPU real.** O Wan também permanece sem validação real; possíveis incompatibilidades de dependências, VRAM ou disco precisam ser investigadas com logs. `ai-colab video models` lista também Wan A14B e LTX 2.5 como candidatos **não implementados**.
 
 | Perfil | GPU para começar | Resolução / FPS | Texto→vídeo | Imagem→vídeo |
 |---|---|---|---|---|
@@ -60,8 +60,8 @@ ai-colab start video --video-model hunyuan15 --gpu L4 --wait 1800
 mkdir -p ~/Videos
 ai-colab video generate \
   --prompt "A pequena nave futurista cruza um campo ao pôr do sol, câmera cinematográfica" \
-  --frames 49 --steps 50 --aspect 16:9 \
-  --output ~/Videos/hunyuan-teste.mp4
+  --frames 49 --quality draft \
+  --output ~/Videos/hunyuan-teste-vertical.mp4
 ```
 
 Para **animar uma imagem** com o mesmo perfil Hunyuan:
@@ -73,7 +73,7 @@ ai-colab video generate \
   --frames 49 --steps 12 --output ~/Videos/hunyuan-animacao.mp4
 ```
 
-A I2V Hunyuan é a versão **step-distilled** e exige exatamente 12 passos; os pixels da imagem determinam a proporção de entrada. **Usar Hunyuan em T4 não é recomendado neste projeto** (a implementação usa BF16; selecione L4/G4). Além da VRAM, pode precisar de muita RAM e espaço em disco para checkpoint e offload de CPU. Evite usar em uma instância com pouco armazenamento. O modelo possui termos de licença da Tencent que precisam ser considerados para uso comercial.
+A I2V Hunyuan é a versão **step-distilled** e exige exatamente 12 passos; na v0.3.1 a imagem de entrada é ajustada para a dimensão solicitada, com corte central (`--image-fit cover`) ou preenchimento sem corte (`--image-fit contain`). O original no Linux não é alterado. **Usar Hunyuan em T4 não é recomendado neste projeto** (a implementação usa BF16; selecione L4/G4). Além da VRAM, pode precisar de muita RAM e espaço em disco para checkpoint e offload de CPU. Evite usar em uma instância com pouco armazenamento. O modelo possui termos de licença da Tencent que precisam ser considerados para uso comercial.
 
 ### 2. Iniciar Wan2.2 TI2V-5B (G4)
 
@@ -85,8 +85,8 @@ ai-colab start video --video-model wan22-5b --gpu G4 --wait 1800
 
 ai-colab video generate \
   --prompt "Um beija-flor azul voa entre flores ao amanhecer, luz natural" \
-  --frames 49 --steps 50 --aspect 16:9 \
-  --output ~/Videos/wan-teste.mp4
+  --frames 49 --quality draft \
+  --output ~/Videos/wan-teste-vertical.mp4
 ```
 
 Para **imagem→vídeo** no mesmo checkpoint:
@@ -99,7 +99,51 @@ ai-colab video generate \
   --output ~/Videos/wan-animacao.mp4
 ```
 
-Wan usa `--offload_model`, `--convert_model_dtype` e `--t5_cpu` automaticamente quando a GPU tem menos de 80 GiB; na G4 de ~96 GB, tenta usar os pesos diretamente na GPU. A opção `--aspect` define 1280×704 ou 704×1280, mas, em I2V, a ferramenta oficial pode ajustar a proporção conforme a imagem. Uma L4 com offload é possível em teoria, mas é significativamente mais exigente; comece pela G4.
+Wan usa `--offload_model`, `--convert_model_dtype` e `--t5_cpu` automaticamente quando a GPU tem menos de 80 GiB; na G4 de ~96 GB, tenta executar sem offload. O `--aspect` define 1280×704 ou 704×1280; em I2V, a imagem é preparada nessa mesma dimensão para evitar mudança inesperada de proporção. O corte central pode alterar o enquadramento (use `--image-fit contain` para preservar todo o original). Uma L4 com offload é possível em teoria, mas é significativamente mais exigente; comece pela G4.
+
+### Novidades v0.3.1: vídeo vertical, qualidade e dimensões
+
+**Formato padrão: vertical `9:16`.** Para reproduzir um vídeo horizontal antigo, informe `--aspect 16:9` explicitamente. Os tamanhos nativos são:
+
+| Modelo | Padrão 9:16 | Horizontal 16:9 | Resolução personalizada |
+|---|---|---|---|
+| Hunyuan 1.5 (checkpoint 480p) | 480×848 | 848×480 | `--size 448x768` por exemplo (múltiplos de 16, mínimo 256 px/lado, área até 848×480); experimental |
+| Wan TI2V-5B (checkpoint 720p) | 704×1280 | 1280×704 | Apenas os dois tamanhos oficiais são aceitos |
+
+**Qualidade por passos:** `--quality draft` usa 20, `--quality standard` 32, `--quality high` 50 (padrão); `--steps N` sempre tem prioridade sobre o preset. Menos passos tende a reduzir tempo de inferência, mas não há garantia de velocidade proporcional nem da mesma qualidade visual. **Hunyuan I2V destilado sempre usa 12 passos**, independentemente do preset.
+
+```bash
+# Vertical padrão, rascunho para economizar unidades:
+ai-colab video generate --prompt "Flores ao vento, câmera lenta" \
+  --quality draft --frames 49 --output ~/Videos/vertical-rascunho.mp4
+
+# Vertical Hunyuan com resolução menor (o checkpoint permanece 480p):
+ai-colab video generate --prompt "Cachoeira na floresta" \
+  --size 448x768 --quality standard --output ~/Videos/cachoeira.mp4
+
+# Horizontal Wan com dimensões oficiais:
+ai-colab video generate --prompt "Uma estrada de montanha" \
+  --aspect 16:9 --quality high --output ~/Videos/estrada.mp4
+```
+
+**Offload:** `--offload auto` (padrão) coloca partes do modelo na CPU quando a VRAM total da GPU é inferior a 80 GiB (ex.: L4). `--offload on` força essa economia de VRAM. `--offload off` requer pelo menos 80 GiB no worker e pode provocar OOM mesmo acima desse limite; use com cuidado. O nome e a VRAM da GPU, a disponibilidade de PyTorch/CUDA e a estratégia escolhida aparecem no log de inferência. `offload CPU` **não significa que toda a geração esteja rodando exclusivamente na CPU**.
+
+**Imagem de entrada:** `--image-fit cover` (padrão) recorta centralmente para preencher o formato; `--image-fit contain` preserva a imagem inteira e adiciona bordas quando necessário. A entrada enviada não é regravada no computador. Para imagens com texto nas bordas, prefira `contain`.
+
+### Diagnóstico da GPU sem uma segunda conexão SSH
+
+A CLI mantém uma sessão SSH dedicada, e uma segunda chamada `colab ssh` pode receber HTTP 429. **Use o proxy já autenticado:**
+
+```bash
+ai-colab gpu status              # modelo da GPU, uso, VRAM, temperatura e processos
+ai-colab gpu status --deep       # consulta opcional ao torch.cuda do ambiente remoto
+ai-colab gpu status --json       # métricas estruturadas
+ai-colab gpu status --watch 10   # acompanhamento contínuo sem reiniciar a GPU
+```
+
+Você pode executar esse comando em outro terminal enquanto o vídeo é gerado. `--deep` executa um pequeno subprocesso PyTorch remoto e pode levar alguns segundos; para monitoramento contínuo prefira apenas `--watch`.
+
+**Atualizações em sessão ativa:** `bash install.sh` substitui arquivos locais, mas **não substitui o worker remoto que já estava rodando na v0.3.0**. Para ativar o novo monitoramento integrado aos jobs e a preparação de imagens, baixe o MP4 já pronto, encerre a sessão com `ai-colab stop` e inicie outra com a v0.3.1. O comando `gpu status` básico pode funcionar imediatamente em sessão antiga porque usa métricas já suportadas pelo proxy anterior; `--deep` exige o proxy novo. Encerrar uma instância remove seus pesos e MP4 efêmeros, pois não usamos Google Drive como cache.
 
 ### 3. Acompanhar e recuperar trabalhos
 
@@ -121,9 +165,12 @@ ai-colab test # verifica worker/health, não executa a geração de vídeo
 ai-colab logs --source bootstrap --lines 150
 ai-colab logs --source video --lines 150
 ai-colab stats
+ai-colab gpu status  # nvidia-smi pelo mesmo túnel: NÃO abre outro colab ssh
+ai-colab gpu status --deep  # também verifica CUDA do PyTorch
+ai-colab gpu status --watch 10  # a cada 10 segundos
 ```
 
-O status de cada job inclui o trecho final de seus logs. **Não reinicie automaticamente em caso de erro**: primeiro consulte logs e disponibilidade de VRAM, RAM e disco. Se a CLI do Google retornar HTTP 503 na etapa `colab new`, os scripts de vídeo nem terão iniciado: a capacidade de criar GPU pelo navegador não garante que a CLI oficial consiga provisionar a mesma GPU.
+O status de cada job inclui o trecho final de seus logs, as dimensões do vídeo, o modo de offload solicitado e amostras de uso da GPU/VRAM (registradas a cada 30 s) com pico de memória. **Não reinicie automaticamente em caso de erro**: primeiro consulte logs e disponibilidade de VRAM, RAM e disco. Se a CLI do Google retornar HTTP 503 na etapa `colab new`, os scripts de vídeo nem terão iniciado: a capacidade de criar GPU pelo navegador não garante que a CLI oficial consiga provisionar a mesma GPU.
 
 **Limites e privacidade:** somente um job ativo por VM; PNG/JPG/WEBP de até 12 MiB; 17–121 frames no formato `4n+1`, máximo de 60 passos, MP4 até 256 MiB, 8 jobs por sessão. O envio da imagem e o download do vídeo usam o túnel SSH autenticado, com portas remotas em `127.0.0.1`. A imagem temporária é excluída após a geração; o MP4 permanece na VM até encerrar a sessão. O comando oficial do Wan pode incluir o *prompt* textual nos logs do job; não utilize dados confidenciais sem avaliar essa retenção e os termos da plataforma.
 
@@ -202,7 +249,7 @@ A conexão remota usa exclusivamente um túnel SSH autenticado, associado à ses
 - API privada: `POST /_colab_ai/transcribe`, com streaming de upload no proxy autenticado.
 - Saída: estrutura JSON contendo texto, idioma e segmentos reais; o cliente salva TXT/SRT/JSON no disco Linux.
 
-O Qwen utiliza a API oficial `Qwen3ASRModel.from_pretrained(...).transcribe(..., return_time_stamps=True)` e seu modelo de alinhamento forçado. O Whisper usa `WhisperModel(...).transcribe(...)`. O download depende do Hugging Face e a inicialização das GPUs ainda não foi validada diretamente nesta versão (testes locais/simulados disponíveis).
+O Qwen utiliza a API oficial `Qwen3ASRModel.from_pretrained(...).transcribe(..., return_time_stamps=True)` e seu modelo de alinhamento forçado. O Whisper usa `WhisperModel(...).transcribe(...)`. O download depende do Hugging Face; a execução da v0.3.1 não foi validada diretamente na GPU (testes locais/simulados disponíveis).
 
 ## Modalidades preservadas
 

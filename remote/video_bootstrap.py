@@ -25,6 +25,14 @@ if not match:
     raise RuntimeError('Não foi possível identificar VRAM')
 gib = float(match.group()) / 1024
 print(f'GPU Video: {name.strip()} | {gib:.1f} GiB', flush=True)
+try:
+    import torch
+    print(f'PyTorch do sistema: {torch.__version__} | CUDA compilado: {torch.version.cuda} | '
+          f'CUDA disponível: {torch.cuda.is_available()}', flush=True)
+    if not torch.cuda.is_available():
+        raise RuntimeError('nvidia-smi encontrou GPU, mas PyTorch CUDA indisponível; verificar ambiente Colab')
+except ImportError as err:
+    raise RuntimeError('O PyTorch CUDA do Colab é obrigatório para o worker de vídeo') from err
 if gib < CONFIG['min_gib']:
     raise RuntimeError(f'GPU insuficiente: mínimo {CONFIG["min_gib"]} GiB para {VARIANT}')
 

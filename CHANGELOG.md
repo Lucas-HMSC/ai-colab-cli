@@ -1,3 +1,18 @@
+# v0.3.1 — diagnóstico GPU, vídeos verticais e controles de geração
+
+- **Padrão 9:16** em `ai-colab video generate`, com 480×848 no Hunyuan e 704×1280 no Wan. `--aspect 16:9` continua funcionando.
+- `--size LARGURAxALTURA` para resolução personalizada no Hunyuan até a área 480p do checkpoint, com validações de segurança; Wan limitado aos dois tamanhos nativos oficiais.
+- `--quality draft|standard|high` (20/32/50 passos, salvo Hunyuan I2V step-distilled que sempre exige 12 passos); `--steps` tem prioridade.
+- `--image-fit cover|contain` ajusta a entrada I2V ao tamanho selecionado, preservando a imagem original no Linux.
+- `--offload auto|on|off`, com seleção por VRAM (<80 GiB usa CPU offload); `off` rejeitado em GPUs menores que 80 GiB. Exibe estratégia e versões CUDA/PyTorch nos logs.
+- **`ai-colab gpu status [--deep] [--json] [--watch N]`**: consulta pelo proxy SSH existente, sem abrir uma segunda sessão `colab ssh` (que pode gerar HTTP 429).
+- Worker de vídeo registra métricas a cada ~30 s, incluindo GPU%, VRAM instantânea e pico por job, recuperáveis pelo comando `ai-colab video status ID`.
+- Bootstrap verifica `torch.cuda.is_available()` antes do download dos checkpoints, reduzindo gastos se o driver estiver incompatível.
+- Código Code/Voice/ASR e preferência global de leitura `Read` preservados; continua **sem cache no Google Drive**.
+- Observação real: um usuário concluiu geração Hunyuan v0.3.0 na L4 em 2.025 s totais com 49 frames/50 passos. A v0.3.1 passou 132 testes locais, mas ainda não foi validada em GPU real.
+
+---
+
 # v0.3.0 — Video operacional na CLI (backends ainda sem validação em GPU real)
 
 - Integra `ai-colab start video --video-model hunyuan15 --gpu L4` e `--video-model wan22-5b --gpu G4` ao fluxo já existente de sessão Colab CLI, proxy autenticado e túnel SSH privado.
