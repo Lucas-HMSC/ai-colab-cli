@@ -25,7 +25,7 @@ from collections import deque
 import urllib.error
 import urllib.request
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "colab-ai"
 STATE_FILE = STATE_DIR / "state.json"
@@ -1597,7 +1597,7 @@ def do_video_generate(args):
                 print(f'Geração concluída em {time.monotonic()-began:.0f}s')
                 return
             if status in ('failed', 'cancelled'):
-                raise RuntimeError(f'Vídeo {status}: {job.get("error", "")}\n{job.get("log_tail", "")[-1000:]}')
+                raise RuntimeError(f'Vídeo {status}: {job.get("error", "")}\n{job.get("log_tail", "")[-2500:]}')
     except KeyboardInterrupt:
         print(f'Interrompeu a espera, mas o trabalho pode continuar na VM. ID: {jid}')
         print(f'Para cancelar: ai-colab video cancel {jid}')

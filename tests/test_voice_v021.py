@@ -20,7 +20,7 @@ from test_voice_v020 import fake_voice_api
 
 class RuntimeCompatibilityTests(unittest.TestCase):
     def test_registry_preserves_code_and_qwen(self):
-        self.assertEqual(app.VERSION, '0.3.1')
+        self.assertEqual(app.VERSION, '0.3.2')
         self.assertEqual(app.PROFILES['code']['model'],'Qwen/Qwen3.8-27B-FP8')
         self.assertIn('262144',str(app.parser_make().parse_args(['start','code','--context','262144'])))
         for q in ('custom','design','clone'):

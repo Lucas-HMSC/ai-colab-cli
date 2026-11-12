@@ -20,7 +20,7 @@ def imported_remote(name, location):
 
 class VideoV031CliTests(unittest.TestCase):
     def test_version_and_portrait_default(self):
-        self.assertEqual(cli.VERSION, '0.3.1')
+        self.assertEqual(cli.VERSION, '0.3.2')
         args = cli.parser_make().parse_args(['video', 'generate', '--prompt', 'uma cidade', '--output', '/tmp/a.mp4'])
         self.assertEqual(args.aspect, '9:16')
         self.assertEqual(args.quality, 'high')

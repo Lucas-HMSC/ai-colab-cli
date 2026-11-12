@@ -5,6 +5,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+
+# Definir antes de importar Diffusers/Transformers. O Wan requer NumPy<2,
+# enquanto o JAX/Flax pré-instalado no Colab pode exigir NumPy 2.
+os.environ["USE_FLAX"] = "0"
+os.environ["USE_TF"] = "0"
+
 import torch
 
 HUNYUAN_T2V = 'hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v'
@@ -87,6 +93,21 @@ def generate_wan(args):
     if not (repo_dir / 'generate.py').is_file():
         root.mkdir(parents=True, exist_ok=True)
         subprocess.check_call(['git', 'clone', '--depth', '1', WAN_GIT, str(repo_dir)])
+    # Verificar importações do repositório antes de baixar dezenas de GB.
+    # Esta checagem detecta conflitos PyTorch/Diffusers/Transformers/JAX e
+    # dependências realmente ausentes sem consumir o download dos pesos.
+    print('Wan: preflight de imports (antes de baixar pesos)...', flush=True)
+    check = subprocess.run(
+        [sys.executable, '-c',
+         'import torch, transformers, diffusers, wan; '
+         'print("Wan imports OK | torch={} | transformers={} | diffusers={}".format('
+         'torch.__version__, transformers.__version__, diffusers.__version__))'],
+        cwd=str(repo_dir), env={**os.environ, 'USE_FLAX': '0', 'USE_TF': '0'},
+        capture_output=True, text=True, timeout=180)
+    if check.returncode != 0:
+        detail = (check.stderr or check.stdout or 'sem detalhe')[-5000:]
+        raise RuntimeError('Wan: erro no autoteste de imports, ANTES do download dos pesos:\n' + detail)
+    print(check.stdout.strip(), flush=True)
     weights = root / 'weights' / 'wan22-5b'
     weights.mkdir(parents=True, exist_ok=True)
     print('Verificando/baixando pesos Wan TI2V-5B em armazenamento efêmero...', flush=True)
@@ -95,7 +116,8 @@ def generate_wan(args):
     print(f'Estratégia Wan: {"offload CPU" if offload_choice(args.offload, g.total_memory/1024**3) else "GPU direta"} | VRAM {g.total_memory/1024**3:.1f} GiB', flush=True)
     cmd = build_wan_command(sys.executable, repo_dir, weights, args)
     print('Iniciando inferência Wan 2.2 TI2V-5B (720p)', flush=True)
-    subprocess.check_call(cmd, cwd=str(repo_dir))
+    subprocess.check_call(cmd, cwd=str(repo_dir),
+                          env={**os.environ, "USE_FLAX": "0", "USE_TF": "0"})
 
 
 def main():

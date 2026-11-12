@@ -1,4 +1,4 @@
-# Colab AI CLI v0.3.1
+# Colab AI CLI v0.3.2
 
 Ferramenta Linux para operar modelos por demanda no **Google Colab Pro** através da **Colab CLI** e um **túnel SSH privado**. A v0.3.1 melhora a modalidade **Video** com HunyuanVideo-1.5 (L4) e Wan2.2 TI2V-5B (G4): T2V/I2V, jobs assíncronos, cancelamento, retomada de download e MP4 local. Mantém a orientação global Read e os backends anteriores de Code, Voice e ASR.
 
@@ -281,3 +281,17 @@ O worker do Whisper agora instala cuBLAS CUDA 12 e cuDNN 9 em um Python 3.12 iso
 Após `ai-colab start transcribe --asr-model whisper --gpu T4`, aguarde a mensagem de API pronta. Se falhar, **não inicie novamente nem desligue imediatamente**: use `ai-colab logs --source vllm --lines 120` e `ai-colab logs --source bootstrap --lines 80`. A ferramenta agora informa a categoria do erro e dicas de correção. Os arquivos de áudio não são incluídos nos logs.
 
 O Qwen3-ASR não foi alterado; continua sendo alternativa funcional até a validação do Whisper na GPU real.
+
+
+## Wan 2.2 — correção do conflito Flax/JAX/NumPy (v0.3.2)
+
+O Colab fornece Flax/JAX no Python do sistema. Como o ambiente de vídeo usa `--system-site-packages` para compartilhar o PyTorch CUDA da VM, esses pacotes também ficam visíveis. O Wan usa PyTorch e requer NumPy<2; uma combinação incompatível de JAX/Flax e NumPy interrompia o import antes do carregamento dos pesos.
+
+Na v0.3.2, o serviço define `USE_FLAX=0` e `USE_TF=0` antes dos imports e faz um preflight do Wan **antes do download dos pesos**. Isso evita o erro observado, mas não substitui a validação real na G4.
+
+```bash
+ai-colab start video --video-model wan22-5b --gpu G4 --wait 1800
+ai-colab video generate --prompt "Uma nave futurista ao pôr do sol" --frames 49 --quality standard --aspect 9:16 --output ~/Videos/wan-vertical.mp4
+```
+
+Se o preflight acusar outro pacote incompatível, envie o `log_tail` exibido ou o log completo antes de tentar novo download. A GPU deve ser reiniciada para carregar a nova versão do worker remoto; essa reinicialização perde os pesos efêmeros já baixados.

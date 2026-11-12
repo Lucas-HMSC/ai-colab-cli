@@ -84,7 +84,7 @@ class VideoCatalogTests(unittest.TestCase):
         self.assertIn('wan22-14b', app.VIDEO_MODELS)
         self.assertIn('ltx25', app.VIDEO_MODELS)
         self.assertIn('audio-video', app.VIDEO_MODELS['ltx25']['tasks'])
-        self.assertEqual(app.VERSION, '0.3.1')
+        self.assertEqual(app.VERSION, '0.3.2')
 
     def test_models_without_gpu(self):
         args = app.parser_make().parse_args(['video', 'models'])

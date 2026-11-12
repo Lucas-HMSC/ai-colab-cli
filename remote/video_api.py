@@ -14,6 +14,10 @@ import sys
 import threading
 import time
 
+# Evita imports acidentais de JAX/Flax no venv com --system-site-packages.
+os.environ['USE_FLAX'] = '0'
+os.environ['USE_TF'] = '0'
+
 CONF = json.loads(Path(os.environ.get('COLAB_AI_VIDEO_CONFIG', '/content/colab-ai-config.json')).read_text())
 VARIANT = CONF['video_variant']
 MODEL = CONF['model']
@@ -139,8 +143,8 @@ def _public_status(job):
     try:
         with path.open('rb') as log:
             size = log.seek(0, 2)
-            log.seek(max(0, size - 1800))
-            out['log_tail'] = log.read().decode('utf-8', 'replace')[-900:]
+            log.seek(max(0, size - 6000))
+            out['log_tail'] = log.read().decode('utf-8', 'replace')[-3500:]
     except OSError:
         out['log_tail'] = ''
     out['generation'] = job.get('generation', {})
@@ -181,7 +185,8 @@ def _run(job, params):
                 job['updated_at'] = time.time()
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                         stdout=log, stderr=subprocess.STDOUT,
-                                        close_fds=True, start_new_session=True)
+                                        close_fds=True, start_new_session=True,
+                                        env={**os.environ, "USE_FLAX": "0", "USE_TF": "0"})
                 job['process'] = proc
             monitor.start()
             code = proc.wait()

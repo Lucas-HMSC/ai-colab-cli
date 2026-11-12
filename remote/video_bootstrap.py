@@ -9,6 +9,11 @@ import subprocess
 import sys
 import time
 
+# Video usa PyTorch. O Colab inclui Flax/JAX que pode conflitar com NumPy<2
+# exigido pelo Wan; não acionar os backends opcionais.
+os.environ['USE_FLAX'] = '0'
+os.environ['USE_TF'] = '0'
+
 CONFIG = json.loads(Path('/content/colab-ai-config.json').read_text())
 VARIANT = CONFIG['video_variant']
 assert VARIANT in {'hunyuan15', 'wan22-5b'}, 'Perfil de vídeo inválido'

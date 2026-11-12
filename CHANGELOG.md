@@ -1,3 +1,15 @@
+# v0.3.2 — correção da inicialização Wan 2.2 com Flax/JAX/NumPy
+
+- Corrige o erro real `AttributeError: module numpy.dtypes has no attribute StringDType` que ocorria ao importar o Wan na G4 (Colab Python 3.13, PyTorch CUDA funcional).
+- Desabilita backends opcionais `USE_FLAX=0` e `USE_TF=0` em **toda a cadeia do worker Video** (bootstrap, API, subprocesso e gerador), antes da importação de Transformers/Diffusers. Evita conflitos com JAX/Flax herdados pelo venv `--system-site-packages` e mantém NumPy<2 exigido pelo Wan.
+- **Preflight de importação do Wan antes do download de pesos**: clona código upstream, testa imports Torch/Transformers/Diffusers/Wan e só então baixa o checkpoint. Se faltar outra dependência, falha com traceback completo sem baixar dezenas de GB.
+- Aumenta o trecho de logs no status do job e nas mensagens de erro.
+- Não instala FlashAttention automaticamente: o repositório Wan permite fallback via PyTorch SDPA; a compilação é custosa e exigiria testes reais da GPU.
+- Preserva todos os módulos, padrão vertical 9:16, offload, GPU status e **sem cache Drive**.
+- Testes locais sem GPU. **A correção ainda não foi executada em uma G4 real.**
+
+---
+
 # v0.3.1 — diagnóstico GPU, vídeos verticais e controles de geração
 
 - **Padrão 9:16** em `ai-colab video generate`, com 480×848 no Hunyuan e 704×1280 no Wan. `--aspect 16:9` continua funcionando.
