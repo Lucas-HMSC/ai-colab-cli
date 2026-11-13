@@ -167,6 +167,176 @@ ACTIVE_VOICE_MODELS = {name: repo for name, repo in VOICE_MODELS.items() if name
 
 SPEAKERS = ("Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee")
 
+MODALITY_ALIASES = {
+    "tts": "voice",
+    "asr": "transcribe",
+}
+
+MODEL_CATALOG = {
+    "code": {
+        "qwen": {
+            "variant": "code",
+            "aliases": ("code", "default", "27b", "qwen3.8-27b"),
+            "gpu": "G4",
+            "repo": PROFILES["code"]["model"],
+            "note": PROFILES["code"]["note"],
+        },
+        "qwen-next": {
+            "variant": "code-next",
+            "aliases": ("code-next", "next", "80b"),
+            "gpu": "G4",
+            "repo": PROFILES["code-next"]["model"],
+            "note": PROFILES["code-next"]["note"],
+        },
+    },
+    "voice": {
+        "custom": {
+            "variant": "custom",
+            "aliases": ("qwen", "default"),
+            "gpu": VOICE_DEFAULT_GPU["custom"],
+            "repo": VOICE_MODELS["custom"],
+            "note": "Qwen3-TTS voz predefinida (PT-BR, speakers Ryan/Vivian/etc.)",
+        },
+        "design": {
+            "variant": "design",
+            "aliases": (),
+            "gpu": VOICE_DEFAULT_GPU["design"],
+            "repo": VOICE_MODELS["design"],
+            "note": "Qwen3-TTS criação de voz por descrição textual",
+        },
+        "clone": {
+            "variant": "clone",
+            "aliases": (),
+            "gpu": VOICE_DEFAULT_GPU["clone"],
+            "repo": VOICE_MODELS["clone"],
+            "note": "Qwen3-TTS clonagem de voz com áudio + transcrição",
+        },
+        "voxcpm2": {
+            "variant": "voxcpm2",
+            "aliases": ("voxcpm",),
+            "gpu": VOICE_DEFAULT_GPU["voxcpm2"],
+            "repo": VOICE_MODELS["voxcpm2"],
+            "note": VOICE_NOTES["voxcpm2"],
+        },
+        "chatterbox-br": {
+            "variant": "chatterbox-br",
+            "aliases": ("chatterbox",),
+            "gpu": VOICE_DEFAULT_GPU["chatterbox-br"],
+            "repo": VOICE_MODELS["chatterbox-br"],
+            "note": VOICE_NOTES["chatterbox-br"],
+        },
+        "kokoro": {
+            "variant": "kokoro",
+            "aliases": (),
+            "gpu": VOICE_DEFAULT_GPU["kokoro"],
+            "repo": VOICE_MODELS["kokoro"],
+            "note": VOICE_NOTES["kokoro"],
+        },
+    },
+    "transcribe": {
+        "whisper": {
+            "variant": "whisper",
+            "aliases": ("default",),
+            "gpu": ASR_DEFAULT_GPU["whisper"],
+            "repo": ASR_MODELS["whisper"],
+            "note": ASR_NOTES["whisper"],
+        },
+        "qwen": {
+            "variant": "qwen",
+            "aliases": ("qwen-asr",),
+            "gpu": ASR_DEFAULT_GPU["qwen"],
+            "repo": ASR_MODELS["qwen"],
+            "note": ASR_NOTES["qwen"],
+        },
+    },
+    "video": {
+        "hunyuan15": {
+            "variant": "hunyuan15",
+            "aliases": ("hunyuan", "default"),
+            "gpu": VIDEO_DEFAULT_GPU["hunyuan15"],
+            "repo": VIDEO_MODELS["hunyuan15"]["repo"],
+            "note": VIDEO_MODELS["hunyuan15"]["note"],
+        },
+        "wan22-5b": {
+            "variant": "wan22-5b",
+            "aliases": ("wan", "wan22"),
+            "gpu": VIDEO_DEFAULT_GPU["wan22-5b"],
+            "repo": VIDEO_MODELS["wan22-5b"]["repo"],
+            "note": VIDEO_MODELS["wan22-5b"]["note"],
+        },
+    },
+}
+
+
+def _find_model_entry(catalog_key: str, model_name: str) -> tuple[str, dict] | None:
+    target = model_name.strip().lower()
+    for canonical, info in MODEL_CATALOG[catalog_key].items():
+        if target == canonical.lower() or target in info["aliases"] or target == info["variant"].lower():
+            return canonical, info
+    return None
+
+
+def resolve_start_target(args) -> tuple[str, str]:
+    """Normaliza modalidade e modelo a partir de --model e flags legadas."""
+    raw_mode = getattr(args, "mode", "code") or "code"
+    mode = MODALITY_ALIASES.get(raw_mode, raw_mode)
+    if mode in COMING:
+        args.mode = mode
+        return mode, mode
+
+    if mode not in PROFILES and mode not in ("voice", "transcribe", "video"):
+        raise RuntimeError(f"Modalidade desconhecida: {raw_mode}")
+
+    catalog_key = "code" if mode in PROFILES else mode
+    requested = getattr(args, "model", None)
+
+    if requested is not None:
+        match = _find_model_entry(catalog_key, requested)
+        if not match:
+            valid = ", ".join(MODEL_CATALOG[catalog_key].keys())
+            for other_key in MODEL_CATALOG:
+                if other_key == catalog_key:
+                    continue
+                other_match = _find_model_entry(other_key, requested)
+                if other_match:
+                    other_canonical, _ = other_match
+                    raise RuntimeError(
+                        f"Modelo '{requested}' pertence à modalidade '{other_key}', não '{mode}'. "
+                        f"Modelos válidos para '{mode}': {valid}. "
+                        f"Use: ai-colab start {other_key} --model {other_canonical}"
+                    )
+            raise RuntimeError(
+                f"Modelo desconhecido para '{mode}': '{requested}'. "
+                f"Modelos válidos: {valid}. Consulte: ai-colab models {mode}"
+            )
+        _, info = match
+        variant = info["variant"]
+    else:
+        if mode in PROFILES:
+            variant = mode
+        elif mode == "voice":
+            variant = getattr(args, "voice_model", "custom")
+        elif mode == "transcribe":
+            variant = getattr(args, "asr_model", "whisper")
+        else:
+            variant = getattr(args, "video_model", "hunyuan15")
+
+    args.mode = mode
+    if mode == "voice":
+        if variant not in ACTIVE_VOICE_MODELS:
+            raise RuntimeError(f"Modelo de voz desativado ou desconhecido: {variant}")
+        args.voice_model = variant
+    elif mode == "transcribe":
+        if variant not in ASR_MODELS:
+            raise RuntimeError(f"Modelo ASR desconhecido: {variant}")
+        args.asr_model = variant
+    elif mode == "video":
+        if variant not in VIDEO_ACTIVE_MODELS:
+            raise RuntimeError(f"Modelo de vídeo não implementado: {variant}")
+        args.video_model = variant
+
+    return mode, variant
+
 
 
 def state_read() -> dict:
@@ -716,16 +886,16 @@ def do_wait(args):
 
 
 def do_start(args) -> None:
-    mode = args.mode
+    raw_mode = getattr(args, "mode", "code") or "code"
+    mode = MODALITY_ALIASES.get(raw_mode, raw_mode)
     if mode in COMING:
         print(f"{COMING[mode]}. A ferramenta NÃO criará uma GPU para esse modo ainda.")
         return
-    if mode not in PROFILES and mode not in ("voice", "transcribe", "video"):
-        raise RuntimeError(f"Modalidade desconhecida: {mode}")
+    mode, variant = resolve_start_target(args)
     if mode == "voice":
-        if args.voice_model not in ACTIVE_VOICE_MODELS:
-            raise RuntimeError(f"Modelo de voz desativado ou desconhecido: {args.voice_model}")
-        if args.voice_model == "higgs3":
+        if variant not in ACTIVE_VOICE_MODELS:
+            raise RuntimeError(f"Modelo de voz desativado ou desconhecido: {variant}")
+        if variant == "higgs3":
             if args.gpu == "A100":
                 raise RuntimeError("Higgs TTS 3: A100 padrão 40 GiB não é a GPU validada na receita oficial. "
                                    "Use --gpu H100, ou --gpu G4 por sua conta e risco experimental.")
@@ -737,31 +907,31 @@ def do_start(args) -> None:
                   "Conteúdo de criadores pode exigir atribuição; consulte a licença oficial.")
         if args.context is not None:
             raise RuntimeError("--context é exclusivo da programação; Voice não usa janela de tokens do vLLM")
-        profile = {"mode": "voice", "model": VOICE_MODELS[args.voice_model],
-                   "context": 0, "min_gib": VOICE_MIN_GIB[args.voice_model], "gpu_util": None, "tool_parser": None,
-                   "reasoning_parser": None, "effort": None, "voice_variant": args.voice_model}
+        profile = {"mode": "voice", "model": VOICE_MODELS[variant],
+                   "context": 0, "min_gib": VOICE_MIN_GIB[variant], "gpu_util": None, "tool_parser": None,
+                   "reasoning_parser": None, "effort": None, "voice_variant": variant}
     elif mode == "video":
-        if args.video_model not in VIDEO_ACTIVE_MODELS:
-            raise RuntimeError(f"Modelo de vídeo não implementado: {args.video_model}")
+        if variant not in VIDEO_ACTIVE_MODELS:
+            raise RuntimeError(f"Modelo de vídeo não implementado: {variant}")
         if args.context is not None:
             raise RuntimeError("--context é exclusivo da programação")
-        if args.video_model == "hunyuan15" and args.gpu == "T4":
+        if variant == "hunyuan15" and args.gpu == "T4":
             raise RuntimeError("HunyuanVideo15 BF16 desta implementação requer L4 ou G4, não T4")
-        profile = {"mode": "video", "model": VIDEO_MODEL_IDS[args.video_model],
-                   "context": 0, "min_gib": VIDEO_MIN_GIB[args.video_model],
+        profile = {"mode": "video", "model": VIDEO_MODEL_IDS[variant],
+                   "context": 0, "min_gib": VIDEO_MIN_GIB[variant],
                    "gpu_util": None, "tool_parser": None, "reasoning_parser": None,
-                   "effort": None, "video_variant": args.video_model}
+                   "effort": None, "video_variant": variant}
     elif mode == "transcribe":
-        if args.asr_model not in ASR_MODELS:
-            raise RuntimeError(f"Modelo ASR desconhecido: {args.asr_model}")
+        if variant not in ASR_MODELS:
+            raise RuntimeError(f"Modelo ASR desconhecido: {variant}")
         if args.context is not None:
             raise RuntimeError("--context é exclusivo da programação; transcrição não usa contexto do vLLM")
-        profile = {"mode": "transcribe", "model": ASR_MODELS[args.asr_model],
-                   "context": 0, "min_gib": ASR_MIN_GIB[args.asr_model], "gpu_util": None,
+        profile = {"mode": "transcribe", "model": ASR_MODELS[variant],
+                   "context": 0, "min_gib": ASR_MIN_GIB[variant], "gpu_util": None,
                    "tool_parser": None, "reasoning_parser": None, "effort": None,
-                   "asr_variant": args.asr_model}
+                   "asr_variant": variant}
     else:
-        profile = dict(PROFILES[mode]); profile["mode"] = mode
+        profile = dict(PROFILES[variant]); profile["mode"] = mode
         if args.context:
             profile["context"] = args.context
     state = state_read()
@@ -812,8 +982,8 @@ def do_start(args) -> None:
     if not exists:
         # Uma VM antiga sumiu: se o usuário não especificou --context,
         # aplicar o novo padrão da versão instalada na próxima sessão.
-        if mode in PROFILES and args.context is None and state.get("context") != PROFILES[mode]["context"]:
-            state["context"] = PROFILES[mode]["context"]
+        if mode in PROFILES and args.context is None and state.get("context") != PROFILES[variant]["context"]:
+            state["context"] = PROFILES[variant]["context"]
             profile["context"] = state["context"]
             print(f"Nova sessão: contexto padrão atualizado para {state['context']} tokens.")
         # Corrige estado local órfão após queda/occiosidade do Colab.
@@ -1194,17 +1364,64 @@ def do_usage(args):
     run(cli_base(auth) + ["usage"])
 
 
-def do_models(args):
+def _build_models_payload(modality: str = "all") -> dict:
+    norm = MODALITY_ALIASES.get(modality, modality)
+    if norm == "all":
+        selected = list(MODEL_CATALOG.keys())
+    elif norm in MODEL_CATALOG:
+        selected = [norm]
+    else:
+        raise RuntimeError(f"Modalidade desconhecida para catálogo: {modality}")
+
+    use_aliases = {
+        "code": ["code", "claude"],
+        "voice": ["voice", "tts"],
+        "transcribe": ["transcribe", "asr"],
+        "video": ["video"],
+    }
+    return {
+        "modalities": {
+            mod: {
+                "commands": use_aliases.get(mod, [mod]),
+                "models": {
+                    name: {
+                        "variant": info["variant"],
+                        "aliases": [a for a in info["aliases"] if a != "default"],
+                        "gpu": info["gpu"],
+                        "repo": info["repo"],
+                        "note": info["note"],
+                        "start_command": f"ai-colab start {mod} --model {name}",
+                    }
+                    for name, info in MODEL_CATALOG[mod].items()
+                },
+            }
+            for mod in selected
+        },
+        "planned": dict(COMING) if norm == "all" else {},
+    }
+
+
+def do_models(args=None):
+    modality = getattr(args, "modality", "all") if args is not None else "all"
+    as_json = bool(getattr(args, "json", False)) if args is not None else False
+    payload = _build_models_payload(modality)
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
     print("Modelos e modalidades:")
-    for m, p in PROFILES.items():
-        print(f"  {m:13} {p['model']} — {p['note']}")
-    for variant, model in ASR_MODELS.items():
-        print(f"  {'transcribe/'+variant:20} {model} — GPU {ASR_DEFAULT_GPU[variant]} | {ASR_NOTES[variant]}")
-    for variant, model in ACTIVE_VOICE_MODELS.items():
-        extra = VOICE_NOTES.get(variant, "Qwen3-TTS")
-        print(f"  {'voice/'+variant:18} {model} — GPU {VOICE_DEFAULT_GPU[variant]} | {extra}")
-    for m, desc in COMING.items():
-        print(f"  {m:13} {desc}" + (" — consulte 'ai-colab video models'" if m == "video" else ""))
+    for mod, section in payload["modalities"].items():
+        cmds = "/".join(section["commands"])
+        print(f"\n[{mod}] (comando pós-start: ai-colab {cmds})")
+        for name, info in section["models"].items():
+            alias_note = f" (aliases: {', '.join(info['aliases'])})" if info["aliases"] else ""
+            print(f"  {name:14} {info['repo']} — GPU {info['gpu']}{alias_note}")
+            print(f"    {info['note']}")
+            print(f"    Iniciar: {info['start_command']}")
+    if payload["planned"]:
+        print("\n[planejadas]")
+        for m, desc in payload["planned"].items():
+            print(f"  {m:14} {desc}")
 
 
 def do_voice(args):
@@ -1212,13 +1429,13 @@ def do_voice(args):
     import base64
     state = state_read()
     if not state or state.get('mode') != 'voice':
-        raise RuntimeError("Inicie a modalidade Voice: ai-colab start voice --gpu L4")
+        raise RuntimeError("Inicie a modalidade Voice: ai-colab start voice --model custom --gpu L4")
     selected = state.get('voice_variant', 'custom')
     if args.action not in VOICE_CAPABILITIES.get(selected, set()):
         needed = {'generate': 'custom', 'design': 'design', 'clone': 'clone'}[args.action]
         raise RuntimeError(f"Modelo em execução: {selected}. "
                            f"Para '{args.action}', execute ai-colab stop e depois "
-                           f"ai-colab start voice --voice-model {needed} --gpu L4")
+                           f"ai-colab start voice --model {needed} (ou --voice-model {needed}) --gpu L4")
     if args.action == 'clone' and not args.consent:
         raise RuntimeError("Clonagem requer --consent, confirmando autorização expressa do titular da voz")
     if args.action == 'clone' and selected == 'clone' and not args.reference_text.strip():
@@ -1330,9 +1547,14 @@ def _render_transcription(payload: dict, fmt: str) -> str:
 def do_transcribe(args):
     """Envia áudio em streaming via SSH privado, devolve somente texto/legendas."""
     import http.client
+    if getattr(args, "action", None) == "models":
+        do_models(argparse.Namespace(modality="transcribe", json=getattr(args, "json", False)))
+        return
+    if not getattr(args, "file", None):
+        raise RuntimeError("Informe --file/--input com o arquivo de áudio/vídeo, ou use: ai-colab transcribe models")
     state = state_read()
     if not state or state.get('mode') != 'transcribe':
-        raise RuntimeError('Inicie ASR primeiro: ai-colab start transcribe --asr-model whisper')
+        raise RuntimeError('Inicie ASR primeiro: ai-colab start transcribe --model whisper')
     source = Path(args.file).expanduser().resolve()
     if not source.is_file():
         raise RuntimeError(f'Arquivo de entrada não encontrado: {source}')
@@ -1405,7 +1627,7 @@ def do_transcribe(args):
 def _video_session() -> dict:
     state = state_read()
     if not state or state.get('mode') != 'video':
-        raise RuntimeError('Inicie Video: ai-colab start video --video-model hunyuan15 (ou wan22-5b)')
+        raise RuntimeError('Inicie Video: ai-colab start video --model hunyuan15 (ou wan22-5b)')
     return state
 
 
@@ -1606,19 +1828,145 @@ def do_video_generate(args):
                        f'Use ai-colab video status {jid} e video fetch quando concluir.')
 
 
+HELP_EPILOG = """\
+Comandos por categoria:
+  Ciclo de vida:
+    start <modalidade> --model <modelo>   Inicia GPU Colab e sobe o servidor
+    wait                                  Aguarda modelo em GPU já ativa
+    reconnect                             Restaura apenas o túnel SSH privado
+    stop                                  Libera a GPU Colab e limpa estado local
+
+  Uso das modalidades:
+    code | claude                         Abre Claude Code conectado ao modelo Code
+    voice | tts                           Sintetiza fala (generate, design, clone, models)
+    transcribe | asr                      Transcreve áudio/vídeo em TXT/SRT/JSON
+    video                                 Gera e gerencia vídeos MP4 (generate, jobs, fetch)
+    models [MODALIDADE] [--json]          Lista modalidades, modelos e comandos start
+
+  Monitoramento e diagnóstico:
+    status | gpu status | stats | monitor Consulta estado, VRAM, temperatura e uso
+    logs | diagnostics | test | ssh-check Logs remotos, saúde da API e chave SSH
+    usage | hf                            Unidades do Colab e modo hf_xet
+
+Modalidades, modelos (--model) e GPUs recomendadas:
+  code              qwen (padrão, G4), qwen-next (80B, G4)
+  voice (tts)       custom (padrão, L4), design (L4), clone (L4),
+                    voxcpm2 (L4), chatterbox-br (L4), kokoro (T4)
+  transcribe (asr)  whisper (padrão, T4), qwen (L4)
+  video             hunyuan15 (padrão, L4), wan22-5b (G4)
+
+Exemplos rápidos:
+  ai-colab models
+  ai-colab start code --model qwen --gpu G4 && ai-colab code
+  ai-colab start tts --model voxcpm2 && ai-colab tts generate --text "Olá!" --output voz.wav
+  ai-colab start asr --model whisper && ai-colab asr --file audio.mp3 --format srt
+  ai-colab start video --model hunyuan15 && ai-colab video generate --prompt "Pôr do sol" --output out.mp4
+  ai-colab stop
+
+Use "ai-colab <comando> --help" para ver opções e exemplos de cada comando.
+"""
+
+START_EPILOG = """\
+Modelos por modalidade (--model / -m):
+  code              qwen (padrão, Qwen3.8-27B, G4), qwen-next (80B, G4)
+  voice | tts       custom (padrão, L4), design (L4), clone (L4),
+                    voxcpm2 (L4), chatterbox-br (L4), kokoro (T4)
+  transcribe | asr  whisper (padrão, T4), qwen (L4)
+  video             hunyuan15 (padrão, L4), wan22-5b (G4)
+
+Exemplos:
+  ai-colab start code --model qwen --gpu G4
+  ai-colab start tts --model kokoro
+  ai-colab start asr --model qwen --gpu L4
+  ai-colab start video --model wan22-5b --gpu G4 --wait 1800
+"""
+
+MODELS_EPILOG = """\
+Exemplos:
+  ai-colab models
+  ai-colab models video
+  ai-colab models tts --json
+"""
+
+VOICE_EPILOG = """\
+Modelos compatíveis (inicie antes com "ai-colab start voice --model <modelo>"):
+  custom         Qwen3-TTS voz predefinida (generate) — GPU L4
+  design         Qwen3-TTS voz por descrição (design) — GPU L4
+  clone          Qwen3-TTS clonagem com áudio + transcrição (clone) — GPU L4
+  voxcpm2        VoxCPM2 (generate, design, clone) — GPU L4
+  chatterbox-br  Chatterbox PT-BR (generate, clone) — GPU L4
+  kokoro         Kokoro 82M PT-BR (generate) — GPU T4
+
+Exemplos:
+  ai-colab start tts --model voxcpm2
+  ai-colab tts generate --text "Olá, mundo!" --output voz.wav
+  ai-colab voice design --text "Bem-vindo" --description "Voz grave calma" --output locucao.wav
+  ai-colab voice models
+"""
+
+TRANSCRIBE_EPILOG = """\
+Modelos compatíveis (inicie antes com "ai-colab start transcribe --model <modelo>"):
+  whisper  faster-whisper-large-v3-turbo (T4, legendas por segmentos)
+  qwen     Qwen3-ASR-1.7B + ForcedAligner (L4, timestamps por palavra)
+
+Exemplos:
+  ai-colab transcribe models
+  ai-colab start asr --model whisper
+  ai-colab asr --file ~/Downloads/audio.mp3 --format all --output ~/Downloads/resultado
+"""
+
+VIDEO_EPILOG = """\
+Modelos compatíveis (inicie antes com "ai-colab start video --model <modelo>"):
+  hunyuan15  HunyuanVideo-1.5 480p (L4; T2V 50 passos, I2V 12 passos)
+  wan22-5b   Wan2.2 TI2V-5B 720p (G4; T2V e I2V)
+
+Exemplos:
+  ai-colab video models
+  ai-colab start video --model hunyuan15 --gpu L4 --wait 1800
+  ai-colab video generate --prompt "Nave futurista ao pôr do sol" --quality draft --output ~/Videos/out.mp4
+  ai-colab video jobs
+"""
+
+CODE_EPILOG = """\
+Pré-requisito: inicie a sessão com "ai-colab start code --model qwen --gpu G4".
+
+Variáveis de ambiente suportadas:
+  COLAB_AI_VISION_GUIDANCE=0  Desativa orientação global de leitura de imagens via Read
+  COLAB_AI_SKIP_PERMISSIONS=0 Preserva prompts interativos de permissão do Claude Code
+
+Exemplos:
+  ai-colab code
+  ai-colab claude -- -p "Explique o repositório"
+"""
+
+
 def parser_make():
-    p = argparse.ArgumentParser(prog="ai-colab", description="Gerenciador multimodal de IA no Colab via CLI + SSH.")
+    p = argparse.ArgumentParser(
+        prog="ai-colab",
+        description="Gerenciador multimodal de IA no Google Colab via CLI + túnel SSH privado.",
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--version", action="version", version=f"Colab AI CLI {VERSION}")
-    sub = p.add_subparsers(dest="command", required=True)
-    a = sub.add_parser("start", help="Inicia uma modalidade")
-    a.add_argument("mode", choices=[*PROFILES, "voice", "transcribe", "video", *COMING], default="code", nargs="?")
-    a.add_argument("--gpu", default=None, help="Code: G4; Voice: L4/T4; ASR: T4/L4; Video: Hunyuan L4, Wan G4")
+    sub = p.add_subparsers(dest="command", required=True, metavar="COMANDO")
+    a = sub.add_parser(
+        "start",
+        help="Inicia uma modalidade (code, voice/tts, transcribe/asr, video)",
+        epilog=START_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    a.add_argument("mode", choices=["code", "code-next", "voice", "tts", "transcribe", "asr", "video", *COMING],
+                   default="code", nargs="?",
+                   help="Modalidade a iniciar (padrão: code). Aliases: tts=voice, asr=transcribe")
+    a.add_argument("-m", "--model", dest="model", default=None, metavar="MODELO",
+                   help="Modelo da modalidade (ex.: qwen, qwen-next, custom, voxcpm2, kokoro, whisper, hunyuan15, wan)")
+    a.add_argument("--gpu", default=None, help="GPU Colab (ex.: T4, L4, G4). Se omitida, usa a recomendada do modelo")
     a.add_argument("--voice-model", choices=list(ACTIVE_VOICE_MODELS), default="custom",
-                   help="custom/design/clone (Qwen), voxcpm2, chatterbox-br, kokoro")
+                   help=argparse.SUPPRESS)
     a.add_argument("--video-model", choices=sorted(VIDEO_ACTIVE_MODELS), default="hunyuan15",
-                   help="hunyuan15 (L4) ou wan22-5b (G4)")
+                   help=argparse.SUPPRESS)
     a.add_argument("--asr-model", choices=list(ASR_MODELS), default="whisper",
-                   help="Whisper Large V3 Turbo (padrão T4) ou Qwen3-ASR (L4)")
+                   help=argparse.SUPPRESS)
     a.add_argument("--hf-mode", choices=["fast", "normal"], help="Sobrescreve o padrão hf_xet para esta sessão")
     a.add_argument("--session", default=SESSION)
     a.add_argument("--auth", choices=["oauth2", "adc"], default="oauth2")
@@ -1654,9 +2002,24 @@ def parser_make():
     a = sub.add_parser("hf", help="Configura download com hf_xet (fast / normal)")
     a.add_argument("action", choices=["fast", "normal", "status"], nargs="?", default="status")
     a.set_defaults(func=do_hf)
-    sub.add_parser("_watchdog", help=argparse.SUPPRESS).set_defaults(func=do_watchdog)
-    sub.add_parser("models", help="Lista perfis e modalidades").set_defaults(func=do_models)
-    video = sub.add_parser("video", help="Geração de vídeos MP4 na GPU Colab")
+    sub.add_parser("_watchdog").set_defaults(func=do_watchdog)
+    a = sub.add_parser(
+        "models",
+        help="Lista modalidades, modelos (--model), GPUs e comandos start",
+        epilog=MODELS_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    a.add_argument("modality", nargs="?", default="all",
+                   choices=["all", "code", "voice", "tts", "transcribe", "asr", "video"],
+                   help="Filtrar por modalidade (padrão: all)")
+    a.add_argument("--json", action="store_true", help="Exibe catálogo estruturado em JSON")
+    a.set_defaults(func=do_models)
+    video = sub.add_parser(
+        "video",
+        help="Geração de vídeos MP4 na GPU Colab",
+        epilog=VIDEO_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     video_sub = video.add_subparsers(dest="action", required=True)
     v = video_sub.add_parser("models", help="Lista modelos candidatos, GPU, modalidades e licenças")
     v.add_argument("--json", action="store_true", help="Exibe catálogo em JSON para futura automação")
@@ -1699,14 +2062,22 @@ def parser_make():
     a = sub.add_parser("logs", help="Últimas linhas do servidor do modelo")
     a.add_argument("--lines", type=int, default=80)
     a.add_argument("--source", choices=["vllm", "bootstrap", "omni", "video"], default="vllm",
-                   help="vllm/voice, bootstrap (instalação) ou omni (backend Higgs)")
+                   help="vllm/voice, bootstrap (instalação), video ou omni")
     a.set_defaults(func=do_logs)
     a = sub.add_parser("test", help="Executa geração real pela API")
     a.add_argument("--timeout", type=int, default=180)
     a.add_argument("--file", help="Áudio de teste para o modo transcribe (sem arquivo: somente health)")
     a.set_defaults(func=do_test)
-    a = sub.add_parser("transcribe", help="Transcreve áudio no Colab e salva TXT/SRT/JSON no Linux")
-    a.add_argument("--file", "--input", dest="file", required=True,
+    a = sub.add_parser(
+        "transcribe",
+        aliases=["asr"],
+        help="Transcreve áudio no Colab e salva TXT/SRT/JSON no Linux",
+        epilog=TRANSCRIBE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    a.add_argument("action", nargs="?", choices=["models"],
+                   help="Opcional: 'models' lista os modelos ASR disponíveis sem iniciar GPU")
+    a.add_argument("--file", "--input", dest="file", required=False,
                    help="Arquivo de áudio/vídeo local (WAV, MP3, MP4, M4A, FLAC, OGG, ...)")
     a.add_argument("--output", help="Destino (inferido do formato; padrão ao lado do áudio)")
     a.add_argument("--format", choices=["txt", "srt", "json", "all"], default="txt",
@@ -1715,9 +2086,19 @@ def parser_make():
                    help="Forçar português ou detectar automaticamente")
     a.add_argument("--timeout", type=int, default=1800, help="Timeout em segundos para ASR")
     a.add_argument("--overwrite", action="store_true", help="Permitir substituir arquivos existentes")
+    a.add_argument("--json", action="store_true", help="Saída em JSON quando usado com 'models'")
     a.set_defaults(func=do_transcribe)
-    voice = sub.add_parser("voice", help="Gera WAV usando a engine Voice selecionada")
+    voice = sub.add_parser(
+        "voice",
+        aliases=["tts"],
+        help="Gera WAV usando a engine Voice selecionada",
+        epilog=VOICE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     voice_sub = voice.add_subparsers(dest="action", required=True)
+    vm = voice_sub.add_parser("models", help="Lista modelos de voz/TTS disponíveis sem iniciar GPU")
+    vm.add_argument("--json", action="store_true", help="Exibe catálogo de voz em JSON")
+    vm.set_defaults(func=do_models, modality="voice")
     for action in ("generate", "design", "clone"):
         v = voice_sub.add_parser(action, help={"generate":"TTS de voz predefinida", "design":"Criar voz por descrição", "clone":"Clonar voz autorizada"}[action])
         group = v.add_mutually_exclusive_group(required=True)
@@ -1745,14 +2126,25 @@ def parser_make():
     a = sub.add_parser("usage", help="Unidades computacionais no Colab")
     a.add_argument("--auth", choices=["oauth2", "adc"], default="oauth2")
     a.set_defaults(func=do_usage)
-    a = sub.add_parser("claude", help="Claude Code com Qwen; conta Anthropic normal preservada")
+    a = sub.add_parser(
+        "claude",
+        aliases=["code"],
+        help="Abre Claude Code conectado ao modelo Code ativo",
+        epilog=CODE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     a.add_argument("extra", nargs=argparse.REMAINDER)
     a.set_defaults(func=do_claude)
     return p
 
 
 def main(argv=None):
-    args = parser_make().parse_args(argv)
+    parser = parser_make()
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if not effective_argv:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
     try:
         args.func(args)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:

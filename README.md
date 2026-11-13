@@ -16,6 +16,33 @@ ai-colab models
 
 A atualização pode ser instalada sobre a versão anterior. **Não execute outra modalidade enquanto uma GPU estiver ativa**; encerre primeiro usando `ai-colab stop`. O modo Higgs permanece oculto. O cache Google Drive continua desativado; os downloads utilizam `hf_xet` com `HF_XET_HIGH_PERFORMANCE=1` por padrão.
 
+## Referência Rápida da CLI Padronizada
+
+Todas as modalidades seguem o mesmo fluxo: iniciar com `ai-colab start <modalidade> --model <modelo>`, usar o comando da modalidade e liberar a GPU com `ai-colab stop`. Use `ai-colab --help` (ou apenas `ai-colab`) e `ai-colab models` para consultar ajuda e catálogo completos direto no terminal.
+
+| Modalidade | Alias | Modelos (`--model` / `-m`) | GPU padrão | Comando pós-start |
+|---|---|---|---|---|
+| `code` | — | `qwen` (padrão, 27B), `qwen-next` (80B) | `G4` | `ai-colab code` / `ai-colab claude` |
+| `voice` | `tts` | `custom` (padrão), `design`, `clone`, `voxcpm2`, `chatterbox-br`, `kokoro` (T4) | `L4` / `T4` | `ai-colab voice` / `ai-colab tts` |
+| `transcribe` | `asr` | `whisper` (padrão, T4), `qwen` (L4) | `T4` / `L4` | `ai-colab transcribe` / `ai-colab asr` |
+| `video` | — | `hunyuan15` (padrão, L4), `wan22-5b` (G4) | `L4` / `G4` | `ai-colab video` |
+
+```bash
+# Descobrir comandos, modelos e exemplos no terminal:
+ai-colab --help
+ai-colab start --help
+ai-colab models            # ou: ai-colab models video | --json
+
+# Exemplos padronizados por modalidade:
+ai-colab start code --model qwen --gpu G4 && ai-colab code
+ai-colab start tts --model voxcpm2 && ai-colab tts generate --text "Olá!" --output voz.wav
+ai-colab start asr --model whisper && ai-colab asr --file audio.mp3 --format srt
+ai-colab start video --model hunyuan15 && ai-colab video generate --prompt "Pôr do sol" --output out.mp4
+ai-colab stop
+```
+
+*(Compatibilidade: as flags antigas `--voice-model`, `--asr-model`, `--video-model` e `start code-next` continuam aceitas internamente.)*
+
 ## Claude Code: orientação global de visão (v0.2.9)
 
 O `claude-colab` agora adiciona **`--append-system-prompt`**, uma orientação aplicada em **todos os projetos abertos por esse launcher**. Quando a tarefa envolve capturas de tela ou arquivos de imagem, ele instrui o agente a **preferir a ferramenta `Read`** do Claude Code para observar imagens nativas e não procurar chaves de APIs de visão, serviços externos ou OCR de terceiros, salvo solicitação expressa. A instrução orienta a catalogação em lotes e proíbe descrições inventadas de imagens não lidas.
