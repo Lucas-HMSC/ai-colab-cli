@@ -503,3 +503,154 @@ class HfTokenPropagationTests(TestCase):
         self.assertIn('"pip", "install", "--system"', text)
         self.assertIn('vllm>=0.28.0', text)
         self.assertIn('Instalando vLLM>=0.28 / transformers>=5.8 (primeira vez na VM)...', text)
+
+
+class HarnessAndOnboardingTests(TestCase):
+    def _code_state(self):
+        return {
+            'mode': 'code',
+            'model': 'Qwen/Qwen3.8-27B-FP8',
+            'gpu': 'G4',
+            'port': 18001,
+            'token': 'tok-opencode',
+            'context': 131072,
+        }
+
+    def test_configure_opencode_provider_creates_and_preserves_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Path(temp) / 'opencode' / 'opencode.json'
+            cfg.parent.mkdir(parents=True)
+            cfg.write_text(json.dumps({
+                'providers': {'custom': {'name': 'Outro'}},
+                'theme': 'dark',
+            }), encoding='utf-8')
+            written = app.configure_opencode_provider(self._code_state(), config_path=cfg)
+            self.assertEqual(written, cfg)
+            self.assertEqual(cfg.stat().st_mode & 0o777, 0o600)
+            data = json.loads(cfg.read_text(encoding='utf-8'))
+            self.assertEqual(data['$schema'], 'https://opencode.ai/config.json')
+            self.assertEqual(data['theme'], 'dark')
+            self.assertEqual(data['providers']['custom'], {'name': 'Outro'})
+            self.assertEqual(data['model'], 'colab-qwen/qwen-coding')
+            prov = data['providers']['colab-qwen']
+            self.assertEqual(prov['settings']['baseURL'], 'http://127.0.0.1:18001/v1')
+            self.assertEqual(prov['settings']['apiKey'], 'tok-opencode')
+            mdl = prov['models']['qwen-coding']
+            self.assertEqual(mdl['modelID'], 'Qwen/Qwen3.8-27B-FP8')
+            self.assertEqual(mdl['limit']['context'], 131072)
+
+    def test_do_opencode_execs_with_standalone_auto_and_opt_out(self):
+        state = self._code_state()
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict('os.environ', {'XDG_CONFIG_HOME': temp, 'COLAB_AI_SKIP_PERMISSIONS': '1'}), \
+                    mock.patch.object(app, 'state_read', return_value=state), \
+                    mock.patch.object(app, 'local_api', return_value=(True, 'ok')), \
+                    mock.patch.object(app, 'watchdog_start'), \
+                    mock.patch.object(app.shutil, 'which', return_value='/usr/bin/opencode'), \
+                    mock.patch.object(app.os, 'execvpe') as ev:
+                args = app.parser_make().parse_args(['opencode', '--', 'run', 'oi'])
+                app.do_opencode(args)
+                exe, argv, _env = ev.call_args.args
+                self.assertEqual(exe, '/usr/bin/opencode')
+                self.assertEqual(argv, ['/usr/bin/opencode', '--standalone', '--auto', 'run', 'oi'])
+                cfg_file = Path(temp) / 'opencode' / 'opencode.json'
+                self.assertTrue(cfg_file.is_file())
+            with mock.patch.dict('os.environ', {'XDG_CONFIG_HOME': temp, 'COLAB_AI_SKIP_PERMISSIONS': '0'}), \
+                    mock.patch.object(app, 'state_read', return_value=state), \
+                    mock.patch.object(app, 'local_api', return_value=(True, 'ok')), \
+                    mock.patch.object(app, 'watchdog_start'), \
+                    mock.patch.object(app.shutil, 'which', return_value='/usr/bin/opencode'), \
+                    mock.patch.object(app.os, 'execvpe') as ev:
+                app.do_opencode(app.parser_make().parse_args(['opencode']))
+                self.assertEqual(ev.call_args.args[1], ['/usr/bin/opencode', '--standalone'])
+
+    def test_code_harness_flag_and_auto_fallback_to_opencode(self):
+        state = self._code_state()
+        args = app.parser_make().parse_args(['code', '--harness', 'opencode', '--', 'run', 'ola'])
+        with mock.patch.object(app, 'do_opencode') as op:
+            app.do_claude(args)
+            op.assert_called_once_with(args)
+
+        def fake_which(name):
+            return '/usr/bin/opencode' if name == 'opencode' else None
+
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict('os.environ', {'XDG_CONFIG_HOME': temp}), \
+                    mock.patch.object(app, 'state_read', return_value=state), \
+                    mock.patch.object(app, 'local_api', return_value=(True, 'ok')), \
+                    mock.patch.object(app, 'watchdog_start'), \
+                    mock.patch.object(app.shutil, 'which', side_effect=fake_which), \
+                    mock.patch.object(app.os, 'execvpe') as ev:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    app.do_claude(app.parser_make().parse_args(['code']))
+                self.assertIn('OpenCode', buf.getvalue())
+                self.assertEqual(ev.call_args.args[0], '/usr/bin/opencode')
+
+    def test_ensure_claude_onboarding_creates_and_preserves(self):
+        with tempfile.TemporaryDirectory() as temp:
+            claude_json = Path(temp) / '.claude.json'
+            app.ensure_claude_onboarding(claude_json=claude_json)
+            self.assertEqual(claude_json.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(claude_json.read_text(encoding='utf-8')),
+                             {'hasCompletedOnboarding': True})
+
+            claude_json.write_text(json.dumps({'theme': 'light', 'custom': 42}), encoding='utf-8')
+            app.ensure_claude_onboarding(claude_json=claude_json)
+            data = json.loads(claude_json.read_text(encoding='utf-8'))
+            self.assertEqual(data, {'theme': 'light', 'custom': 42, 'hasCompletedOnboarding': True})
+
+    def test_proxy_forwards_word_timestamps_and_diarize_headers(self):
+        proxy = importlib.util.spec_from_file_location(
+            'asr_proxy_headers', Path(__file__).resolve().parents[1] / 'remote/proxy.py')
+        mod = importlib.util.module_from_spec(proxy)
+        proxy.loader.exec_module(mod)
+        mod.ASR_MODE = True
+        captured_headers = {}
+
+        class FakeResp:
+            status = 200
+            def getheader(self, name, default=None):
+                return 'application/json' if name == 'Content-Type' else default
+            def read1(self, _n):
+                if not getattr(self, '_done', False):
+                    self._done = True
+                    return b'{"text":"ok"}'
+                return b''
+
+        class FakeConn:
+            def __init__(self, *a, **kw):
+                pass
+            def putrequest(self, method, path):
+                captured_headers['_req'] = (method, path)
+            def putheader(self, k, v):
+                captured_headers[k] = v
+            def endheaders(self):
+                pass
+            def send(self, _b):
+                pass
+            def getresponse(self):
+                return FakeResp()
+            def close(self):
+                pass
+
+        with mock.patch.object(mod.http.client, 'HTTPConnection', FakeConn), \
+                mock.patch.object(mod.BaseHTTPRequestHandler, 'handle', lambda self: None):
+            h = mod.make_handler('tok')(mock.MagicMock(), ('127.0.0.1', 12345), mock.MagicMock())
+            h.command = 'POST'
+            h.path = '/_colab_ai/transcribe'
+            h.requestline = 'POST /_colab_ai/transcribe HTTP/1.1'
+            h.request_version = 'HTTP/1.1'
+            h.headers = {
+                'Authorization': 'Bearer tok',
+                'Content-Length': '3',
+                'X-Colab-Ai-Extension': '.wav',
+                'X-Colab-Ai-Language': 'pt',
+                'X-Colab-Ai-Word-Timestamps': 'true',
+                'X-Colab-Ai-Diarize': 'true',
+            }
+            h.rfile = io.BytesIO(b'abc')
+            h.wfile = io.BytesIO()
+            h.do_POST()
+        self.assertEqual(captured_headers.get('X-Colab-Ai-Word-Timestamps'), 'true')
+        self.assertEqual(captured_headers.get('X-Colab-Ai-Diarize'), 'true')

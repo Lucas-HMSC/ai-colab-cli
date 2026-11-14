@@ -1091,7 +1091,7 @@ def do_start(args) -> None:
         "ai-colab voice generate --text \"Olá, mundo!\" --output teste.wav" if mode == "voice" else
         "ai-colab transcribe --file audio.mp3 --output transcricao.txt" if mode == "transcribe" else
         "ai-colab video generate --prompt \"um gato caminhando\" --output ~/Videos/gato.mp4" if mode == "video" else
-        "claude-colab  (ou ai-colab claude)"))
+        "claude-colab ou opencode-colab  (ai-colab code | ai-colab opencode)"))
 
 
 def do_stop(args) -> None:
@@ -1219,12 +1219,13 @@ def do_video(args):
     print("\nConsulte RESEARCH_VIDEO_2026.md para seleção, requisitos e fontes.")
 
 
-def do_claude(args):
+def _prepare_code_session(args) -> dict:
+    """Valida sessão Code ativa, reconecta túnel se necessário e garante watchdog."""
     state = state_read()
     if not state:
         raise RuntimeError("GPU não iniciada. Execute: ai-colab start code")
     if state.get("mode") in ("voice", "transcribe", "video"):
-        raise RuntimeError("Sessão não Code ativa. Claude Code exige Code: use stop/start code")
+        raise RuntimeError("Sessão não Code ativa. Programação exige Code: use stop/start code")
     good, detail = local_api(state, timeout=3)
     if not good:
         do_reconnect(args)
@@ -1232,9 +1233,110 @@ def do_claude(args):
     if not good:
         raise RuntimeError(f"Endpoint indisponível: {detail}. Use 'ai-colab diagnostics'.")
     watchdog_start(state)
+    return state
+
+
+def ensure_claude_onboarding(claude_json: Path | None = None) -> None:
+    """Garante hasCompletedOnboarding no ~/.claude.json sem apagar dados existentes."""
+    target = claude_json or (Path.home() / ".claude.json")
+    data = {}
+    if target.exists():
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                if loaded.get("hasCompletedOnboarding") is True:
+                    return
+                data = loaded
+        except (OSError, ValueError):
+            return
+    data["hasCompletedOnboarding"] = True
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(target)
+
+
+def configure_opencode_provider(state: dict, config_path: Path | None = None) -> Path:
+    """Registra o provedor colab-qwen no opencode.json preservando outros provedores."""
+    if config_path is None:
+        cfg_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        config_path = cfg_home / "opencode" / "opencode.json"
+    data = {}
+    if config_path.exists():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, ValueError):
+            data = {}
+    data.setdefault("$schema", "https://opencode.ai/config.json")
+    context_len = int(state.get("context") or PROFILES.get(state.get("mode"), PROFILES["code"])["context"])
+    gpu = state.get("gpu", "G4")
+    providers = data.setdefault("providers", {})
+    providers["colab-qwen"] = {
+        "name": f"{state['model']} | Colab ({gpu})",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+            "baseURL": f"http://127.0.0.1:{state['port']}/v1",
+            "apiKey": state["token"],
+            "headerTimeout": 900000,
+            "chunkTimeout": 900000,
+        },
+        "models": {
+            "qwen-coding": {
+                "name": f"{state['model']} ({gpu})",
+                "modelID": state["model"],
+                "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
+                "limit": {"context": context_len, "output": 16384},
+                "settings": {"reasoningEffort": "medium"},
+                "variants": [
+                    {"id": "low", "settings": {"reasoningEffort": "low"}},
+                    {"id": "medium", "settings": {"reasoningEffort": "medium"}},
+                    {"id": "high", "settings": {"reasoningEffort": "medium"}},
+                    {"id": "xhigh", "settings": {"reasoningEffort": "xhigh"}},
+                ],
+            }
+        },
+    }
+    data["model"] = "colab-qwen/qwen-coding"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(config_path)
+    return config_path
+
+
+def do_opencode(args):
+    """Abre OpenCode CLI conectado ao endpoint OpenAI-compatível do Colab."""
+    state = _prepare_code_session(args)
+    opencode = shutil.which("opencode")
+    if not opencode:
+        raise RuntimeError("OpenCode CLI não encontrado no PATH. Instale em https://opencode.ai ou use 'ai-colab claude'.")
+    configure_opencode_provider(state)
+    argv = list(getattr(args, "extra", None) or [])
+    if argv and argv[0] == "--":
+        argv = argv[1:]
+    bypass = os.environ.get("COLAB_AI_SKIP_PERMISSIONS", "1").strip().lower()
+    if bypass not in ("0", "false", "no", "off") and "--auto" not in argv:
+        argv.insert(0, "--auto")
+    if "--standalone" not in argv and "--server" not in argv:
+        argv.insert(0, "--standalone")
+    os.execvpe(opencode, [opencode, *argv], os.environ.copy())
+
+
+def do_claude(args):
+    if getattr(args, "harness", None) == "opencode":
+        return do_opencode(args)
+    state = _prepare_code_session(args)
     claude = shutil.which("claude")
     if not claude:
-        raise RuntimeError("Claude Code CLI não encontrado no PATH.")
+        if getattr(args, "harness", None) is None and shutil.which("opencode"):
+            print("Claude Code não encontrado no PATH; abrindo OpenCode conectado ao Colab...", flush=True)
+            return do_opencode(args)
+        raise RuntimeError("Claude Code CLI não encontrado no PATH. Instale @anthropic-ai/claude-code ou use 'ai-colab opencode'.")
+    ensure_claude_onboarding()
     env = os.environ.copy()
     for key in ["ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]:
         env.pop(key, None)
@@ -1891,7 +1993,7 @@ Comandos por categoria:
     stop                                  Libera a GPU Colab e limpa estado local
 
   Uso das modalidades:
-    code | claude                         Abre Claude Code conectado ao modelo Code
+    code | claude | opencode              Abre Claude Code ou OpenCode conectado ao modelo Code
     voice | tts                           Sintetiza fala (generate, design, clone, models)
     transcribe | asr                      Transcreve áudio/vídeo em TXT/SRT/JSON
     video                                 Gera e gerencia vídeos MP4 (generate, jobs, fetch)
@@ -1986,10 +2088,12 @@ Pré-requisito: inicie a sessão com "ai-colab start code --model qwen --gpu G4"
 
 Variáveis de ambiente suportadas:
   COLAB_AI_VISION_GUIDANCE=0  Desativa orientação global de leitura de imagens via Read
-  COLAB_AI_SKIP_PERMISSIONS=0 Preserva prompts interativos de permissão do Claude Code
+  COLAB_AI_SKIP_PERMISSIONS=0 Preserva prompts interativos de permissão (Claude Code / OpenCode --auto)
 
 Exemplos:
-  ai-colab code
+  ai-colab code                        # Claude Code (ou OpenCode se claude ausente)
+  ai-colab code --harness opencode     # Força OpenCode (não exige conta Anthropic)
+  ai-colab opencode                    # Equivalente ao launcher opencode-colab
   ai-colab claude -- -p "Explique o repositório"
 """
 
@@ -2190,12 +2294,22 @@ def parser_make():
     a = sub.add_parser(
         "claude",
         aliases=["code"],
-        help="Abre Claude Code conectado ao modelo Code ativo",
+        help="Abre Claude Code (ou OpenCode via --harness) conectado ao modelo Code ativo",
+        epilog=CODE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    a.add_argument("--harness", choices=["claude", "opencode"], default=None,
+                   help="Escolhe o cliente de código: claude ou opencode")
+    a.add_argument("extra", nargs=argparse.REMAINDER)
+    a.set_defaults(func=do_claude)
+    a = sub.add_parser(
+        "opencode",
+        help="Abre OpenCode conectado ao modelo Code ativo (sem conta Anthropic)",
         epilog=CODE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     a.add_argument("extra", nargs=argparse.REMAINDER)
-    a.set_defaults(func=do_claude)
+    a.set_defaults(func=do_opencode)
     return p
 
 

@@ -262,6 +262,9 @@ def make_handler(api_key):
                     upstream.putheader("Content-Length", str(size))
                     upstream.putheader("X-Colab-Ai-Extension", self.headers.get("X-Colab-Ai-Extension", ""))
                     upstream.putheader("X-Colab-Ai-Language", self.headers.get("X-Colab-Ai-Language", "pt"))
+                    for extra_header in ("X-Colab-Ai-Word-Timestamps", "X-Colab-Ai-Diarize"):
+                        if self.headers.get(extra_header) is not None:
+                            upstream.putheader(extra_header, self.headers.get(extra_header))
                     upstream.endheaders()
                     remaining = size
                     while remaining:

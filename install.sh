@@ -17,5 +17,9 @@ cat > "$BIN/claude-colab" <<'EOF'
 #!/usr/bin/env bash
 exec python3 "$HOME/.local/share/colab-ai/ai_colab.py" claude -- "$@"
 EOF
-chmod +x "$BIN/ai-colab" "$BIN/claude-colab"
+cat > "$BIN/opencode-colab" <<'EOF'
+#!/usr/bin/env bash
+exec python3 "$HOME/.local/share/colab-ai/ai_colab.py" opencode -- "$@"
+EOF
+chmod +x "$BIN/ai-colab" "$BIN/claude-colab" "$BIN/opencode-colab"
 printf 'Instalado! Verifique se ~/.local/bin está no PATH. Execute: ai-colab models\n'
