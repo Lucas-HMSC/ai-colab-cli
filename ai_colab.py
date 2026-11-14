@@ -1117,6 +1117,27 @@ def do_stop(args) -> None:
 
 def do_status(args) -> None:
     state = state_read()
+    if getattr(args, "json", False):
+        if not state:
+            print(json.dumps({"active": False}, ensure_ascii=False))
+            return
+        good, detail = local_api(state)
+        snapshot_ok, snapshot = runtime_status(state)
+        print(json.dumps({
+            "active": True,
+            "mode": state.get("mode"),
+            "model": state.get("model"),
+            "gpu": state.get("gpu"),
+            "port": state.get("port"),
+            "token": state.get("token"),
+            "tunnel_active": pid_running(state.get("tunnel_pid")),
+            "serve_active": pid_running(state.get("serve_pid")),
+            "watchdog_active": pid_running(state.get("watchdog_pid")),
+            "api_ready": good,
+            "api_detail": detail,
+            "runtime": snapshot if snapshot_ok else None,
+        }, ensure_ascii=False, indent=2))
+        return
     if not state:
         print("Nenhuma sessão da ferramenta registrada. GPU não iniciada por esta ferramenta.")
         return
@@ -1982,6 +2003,7 @@ def parser_make():
     a.set_defaults(func=do_stop)
     a = sub.add_parser("status", help="Mostra estado e API")
     a.add_argument("--remote", action="store_true")
+    a.add_argument("--json", action="store_true", help="Saída em JSON para automação")
     a.set_defaults(func=do_status)
     sub.add_parser("reconnect", help="Restaura somente túnel SSH").set_defaults(func=do_reconnect)
     gpu = sub.add_parser('gpu', help='Diagnóstico da GPU pelo túnel atual (sem nova sessão SSH)')
