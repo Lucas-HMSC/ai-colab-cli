@@ -1573,6 +1573,13 @@ def do_transcribe(args):
         return
     if not getattr(args, "file", None):
         raise RuntimeError("Informe --file/--input com o arquivo de áudio/vídeo, ou use: ai-colab transcribe models")
+    # --json com --file equivale a --format json --stdout (modo stdout).
+    stdout_mode = bool(getattr(args, "stdout", False))
+    if getattr(args, "json", False):
+        args.format = "json"
+        stdout_mode = True
+    if stdout_mode and args.format == "all":
+        raise RuntimeError('Não é possível usar --stdout com --format all.')
     state = state_read()
     if not state or state.get('mode') != 'transcribe':
         raise RuntimeError('Inicie ASR primeiro: ai-colab start transcribe --model whisper')
@@ -1588,12 +1595,16 @@ def do_transcribe(args):
         raise RuntimeError('Áudio deve ter entre 1 byte e 150 MiB.')
     if args.timeout < 1:
         raise RuntimeError('Timeout deve ser positivo')
-    formats = _formats_from_options(source, args.output, args.format)
-    for dest in formats.values():
-        if not dest.parent.exists() or not dest.parent.is_dir():
-            raise RuntimeError(f'Pasta de saída ausente: {dest.parent}')
-        if dest.exists() and not args.overwrite:
-            raise RuntimeError(f'Arquivo já existe: {dest}. Para substituir, use --overwrite.')
+    if stdout_mode:
+        # Sem --file de destino: nada no disco, só stdout.
+        formats = {}
+    else:
+        formats = _formats_from_options(source, args.output, args.format)
+        for dest in formats.values():
+            if not dest.parent.exists() or not dest.parent.is_dir():
+                raise RuntimeError(f'Pasta de saída ausente: {dest.parent}')
+            if dest.exists() and not args.overwrite:
+                raise RuntimeError(f'Arquivo já existe: {dest}. Para substituir, use --overwrite.')
     conn = http.client.HTTPConnection('127.0.0.1', int(state['port']), timeout=args.timeout)
     begun = time.monotonic()
     try:
@@ -1611,7 +1622,8 @@ def do_transcribe(args):
                 if not chunk:
                     break
                 conn.send(chunk)
-        print(f'Transcrevendo com {state["model"]} no Colab...', flush=True)
+        if not stdout_mode:
+            print(f'Transcrevendo com {state["model"]} no Colab...', flush=True)
         response = conn.getresponse()
         raw = response.read(16 * 1024 * 1024 + 1)
         if len(raw) > 16 * 1024 * 1024:
@@ -1621,24 +1633,28 @@ def do_transcribe(args):
         result = json.loads(raw)
         if not isinstance(result, dict) or not isinstance(result.get('text'), str):
             raise RuntimeError('Resposta inválida da engine ASR')
-        outputs = {k: _render_transcription(result, k) for k in formats}
-        # Prepara todos os arquivos antes de substituir qualquer destino.
-        prepared = {}
-        try:
-            for fmt, destination in formats.items():
-                with tempfile.NamedTemporaryFile('w', encoding='utf-8',
-                                                  prefix='.colab-asr-', suffix='.tmp',
-                                                  dir=destination.parent, delete=False) as tmp:
-                    tmp.write(outputs[fmt])
-                    prepared[fmt] = Path(tmp.name)
-            for fmt, destination in formats.items():
-                os.replace(prepared[fmt], destination)
-                print(f'Arquivo criado: {destination}')
-        finally:
-            for pth in prepared.values():
-                pth.unlink(missing_ok=True)
-        print(f'Concluído em {time.monotonic() - begun:.1f}s | idioma={result.get("language", "?")} '
-              f'| segmentos={len(result.get("segments") or [])}')
+        if stdout_mode:
+            # Sem mensagens de progresso/resumo: stdout 100% limpo.
+            print(_render_transcription(result, args.format), end="")
+        else:
+            outputs = {k: _render_transcription(result, k) for k in formats}
+            # Prepara todos os arquivos antes de substituir qualquer destino.
+            prepared = {}
+            try:
+                for fmt, destination in formats.items():
+                    with tempfile.NamedTemporaryFile('w', encoding='utf-8',
+                                                      prefix='.colab-asr-', suffix='.tmp',
+                                                      dir=destination.parent, delete=False) as tmp:
+                        tmp.write(outputs[fmt])
+                        prepared[fmt] = Path(tmp.name)
+                for fmt, destination in formats.items():
+                    os.replace(prepared[fmt], destination)
+                    print(f'Arquivo criado: {destination}')
+            finally:
+                for pth in prepared.values():
+                    pth.unlink(missing_ok=True)
+            print(f'Concluído em {time.monotonic() - begun:.1f}s | idioma={result.get("language", "?")} '
+                  f'| segmentos={len(result.get("segments") or [])}')
     except (OSError, ValueError, http.client.HTTPException) as exc:
         raise RuntimeError(f'Falha na transcrição/comunicação: {type(exc).__name__}: {exc}') from exc
     finally:
@@ -2109,6 +2125,8 @@ def parser_make():
     a.add_argument("--timeout", type=int, default=1800, help="Timeout em segundos para ASR")
     a.add_argument("--overwrite", action="store_true", help="Permitir substituir arquivos existentes")
     a.add_argument("--json", action="store_true", help="Saída em JSON quando usado com 'models'")
+    a.add_argument("--stdout", action="store_true",
+                   help="Imprime a transcrição direto no stdout, sem gravar arquivo (ignora --output)")
     a.set_defaults(func=do_transcribe)
     voice = sub.add_parser(
         "voice",
