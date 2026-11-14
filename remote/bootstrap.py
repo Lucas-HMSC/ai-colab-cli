@@ -42,6 +42,15 @@ gib = float(match.group(1)) / 1024
 print(f"GPU: {gpu.strip()} | {gib:.1f} GiB", flush=True)
 if gib < config["min_gib"]:
     raise RuntimeError(f"GPU insuficiente para perfil {model}: mínimo ~{config['min_gib']} GiB")
+def _uv_bin():
+    """Retorna caminho do binário uv, instalando-o sob demanda via pip."""
+    uv = shutil.which("uv")
+    if not uv:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "uv"])
+        uv = shutil.which("uv") or "/usr/local/bin/uv"
+    return uv
+
+
 # Atualizar o vLLM apenas quando está ausente ou incompatível com requisitos do perfil.
 try:
     import importlib.metadata as md
@@ -51,12 +60,13 @@ except (ImportError, md.PackageNotFoundError, ValueError):
     good = False
 if not good:
     print("Instalando vLLM>=0.28 / transformers>=5.8 (primeira vez na VM)...", flush=True)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", "vllm>=0.28.0", "transformers>=5.8.0", "hf_xet"])
+    subprocess.check_call([_uv_bin(), "pip", "install", "--system", "-q", "-U",
+                           "vllm>=0.28.0", "transformers>=5.8.0", "hf_xet"])
 
 try:
     import hf_xet
 except ImportError:
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'hf_xet'])
+    subprocess.check_call([_uv_bin(), "pip", "install", "--system", "-q", "hf_xet"])
 print('Download HF: hf_xet', config.get('hf_mode', 'fast'), flush=True)
 
 # Evitar duas instâncias pesadas no mesmo runtime.

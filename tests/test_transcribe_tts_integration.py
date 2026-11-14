@@ -497,3 +497,9 @@ class HfTokenPropagationTests(TestCase):
             text = (root / name).read_text(encoding='utf-8')
             self.assertIn('hf_token', text, f'{name} não lê hf_token do config')
             self.assertIn('HF_TOKEN', text, f'{name} não exporta HF_TOKEN')
+
+    def test_code_bootstrap_uses_uv_pip_system(self):
+        text = (Path(__file__).resolve().parents[1] / 'remote/bootstrap.py').read_text(encoding='utf-8')
+        self.assertIn('"pip", "install", "--system"', text)
+        self.assertIn('vllm>=0.28.0', text)
+        self.assertIn('Instalando vLLM>=0.28 / transformers>=5.8 (primeira vez na VM)...', text)
