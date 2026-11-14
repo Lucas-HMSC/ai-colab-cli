@@ -11,7 +11,7 @@ CLI para Linux que transforma GPUs sob demanda do **Google Colab** (via `google-
 ## Como funciona
 
 1. **`ai-colab start <modalidade> --model <modelo>`** aloca uma GPU no Colab, envia os scripts remotos de bootstrap e proxy autenticado, abre o túnel SSH em `127.0.0.1:18001` e inicia um *watchdog* local para manter o túnel ativo.
-2. **Uso local transparente:** você consome a modalidade pelo próprio `ai-colab` (ou pelos launchers `claude-colab` / `opencode-colab` / `ai-colab code` no caso de programação).
+2. **Uso local transparente:** você consome todas as modalidades pelo próprio `ai-colab` (ex.: `ai-colab code`, `ai-colab tts`, `ai-colab asr`, `ai-colab video`).
 3. **`ai-colab stop`** libera a GPU remota no Colab e remove o estado temporário local.
 
 > [!IMPORTANT]
@@ -41,7 +41,7 @@ CLI para Linux que transforma GPUs sob demanda do **Google Colab** (via `google-
    cd ai-colab-cli
    bash install.sh
    ```
-   O script instala os arquivos em `~/.local/share/colab-ai/` e cria os executáveis `ai-colab`, `claude-colab` e `opencode-colab` em `~/.local/bin/`. Certifique-se de que `~/.local/bin` está no seu `PATH`:
+   O script instala os arquivos em `~/.local/share/colab-ai/` e cria o executável `ai-colab` em `~/.local/bin/`. Certifique-se de que `~/.local/bin` está no seu `PATH`:
    ```bash
    export PATH="$HOME/.local/bin:$PATH"
    ```
@@ -94,11 +94,11 @@ ai-colab start <modalidade> [--model MODELO] [--gpu GPU] [--wait SEGUNDOS] [--hf
 
 ## Guia de uso por modalidade
 
-### 1. Programação com Claude Code ou OpenCode (`code` / `claude` / `opencode`)
+### 1. Programação com Claude Code ou OpenCode (`code`)
 
-Inicia um servidor vLLM compatível com as APIs Anthropic e OpenAI no Colab e conecta o cliente local escolhido através do túnel privado:
-- **Claude Code** (`claude-colab`, `ai-colab claude` ou `ai-colab code`): injeta variáveis de ambiente sem alterar seu `claude` padrão nem `settings.json`, e garante `hasCompletedOnboarding` em `~/.claude.json` em instalações novas.
-- **OpenCode** (`opencode-colab`, `ai-colab opencode` ou `ai-colab code --harness opencode`): **não exige conta da Anthropic**; registra automaticamente o provedor `colab-qwen` em `~/.config/opencode/opencode.json` preservando os demais provedores e inicia em `--standalone`. Se `claude` não estiver instalado no `PATH`, `ai-colab code` usa o OpenCode automaticamente quando disponível.
+Inicia um servidor vLLM compatível com as APIs Anthropic e OpenAI no Colab e conecta o cliente local escolhido através do túnel privado pelo comando `ai-colab code`:
+- **Claude Code** (`ai-colab code` ou `ai-colab code --harness claude`): injeta variáveis de ambiente sem alterar seu `claude` padrão nem `settings.json`, e garante `hasCompletedOnboarding` em `~/.claude.json` em instalações novas.
+- **OpenCode** (`ai-colab code --harness opencode`): **não exige conta da Anthropic**; registra automaticamente o provedor `colab-qwen` em `~/.config/opencode/opencode.json` preservando os demais provedores e inicia em `--standalone`. Se `claude` não estiver instalado no `PATH`, `ai-colab code` usa o OpenCode automaticamente quando disponível.
 
 ```bash
 # Iniciar GPU com o modelo padrão (Qwen3.8-27B-FP8)
@@ -107,19 +107,16 @@ ai-colab start code --model qwen --gpu G4
 # Opcional: ajustar janela de contexto (padrão: 131072)
 ai-colab start code --model qwen --gpu G4 --context 262144
 
-# Abrir sessão com Claude Code
+# Abrir sessão com o cliente padrão (Claude Code, ou OpenCode se claude estiver ausente)
 ai-colab code
-ai-colab claude
-claude-colab
 
-# Abrir sessão com OpenCode (sem conta Anthropic)
-ai-colab opencode
+# Forçar Claude Code ou OpenCode (sem conta Anthropic)
+ai-colab code --harness claude
 ai-colab code --harness opencode
-opencode-colab
 
 # Passar flags extras diretamente ao cliente escolhido
 ai-colab code -- -p "Explique a arquitetura deste repositório"
-ai-colab opencode -- run "Explique a arquitetura deste repositório"
+ai-colab code --harness opencode -- run "Explique a arquitetura deste repositório"
 
 # Ao terminar, liberar a GPU
 ai-colab stop

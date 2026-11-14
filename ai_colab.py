@@ -104,7 +104,7 @@ VIDEO_MODELS = {
     },
 }
 
-# Orientação restrita ao launcher claude-colab, não ao comando claude original
+# Orientação restrita ao comando ai-colab code, não ao comando claude original
 # nem aos arquivos CLAUDE.md do usuário. Não bloqueia tecnicamente ferramentas.
 GLOBAL_VISION_GUIDANCE = (
     "Ao lidar com imagens locais (incluindo screenshots, referências visuais e "
@@ -955,7 +955,7 @@ def do_start(args) -> None:
             print(f"Já ativa: {msg}. " + ("Use ai-colab voice generate --help" if mode == "voice" else
                                                 "Use ai-colab transcribe --help" if mode == "transcribe" else
                                                 "Use ai-colab video generate --help" if mode == "video" else
-                                                "Use claude-colab para programar."))
+                                                "Use ai-colab code para programar."))
             return
     # Verifica requisitos antes de provisionar a GPU.
     ensure_key()
@@ -1091,7 +1091,7 @@ def do_start(args) -> None:
         "ai-colab voice generate --text \"Olá, mundo!\" --output teste.wav" if mode == "voice" else
         "ai-colab transcribe --file audio.mp3 --output transcricao.txt" if mode == "transcribe" else
         "ai-colab video generate --prompt \"um gato caminhando\" --output ~/Videos/gato.mp4" if mode == "video" else
-        "claude-colab ou opencode-colab  (ai-colab code | ai-colab opencode)"))
+        "ai-colab code  (ou ai-colab code --harness opencode)"))
 
 
 def do_stop(args) -> None:
@@ -1993,7 +1993,7 @@ Comandos por categoria:
     stop                                  Libera a GPU Colab e limpa estado local
 
   Uso das modalidades:
-    code | claude | opencode              Abre Claude Code ou OpenCode conectado ao modelo Code
+    code                                  Abre Claude Code ou OpenCode conectado ao modelo Code
     voice | tts                           Sintetiza fala (generate, design, clone, models)
     transcribe | asr                      Transcreve áudio/vídeo em TXT/SRT/JSON
     video                                 Gera e gerencia vídeos MP4 (generate, jobs, fetch)
@@ -2093,8 +2093,8 @@ Variáveis de ambiente suportadas:
 Exemplos:
   ai-colab code                        # Claude Code (ou OpenCode se claude ausente)
   ai-colab code --harness opencode     # Força OpenCode (não exige conta Anthropic)
-  ai-colab opencode                    # Equivalente ao launcher opencode-colab
-  ai-colab claude -- -p "Explique o repositório"
+  ai-colab code --harness claude       # Força Claude Code
+  ai-colab code -- -p "Explique o repositório"
 """
 
 
@@ -2292,8 +2292,8 @@ def parser_make():
     a.add_argument("--auth", choices=["oauth2", "adc"], default="oauth2")
     a.set_defaults(func=do_usage)
     a = sub.add_parser(
-        "claude",
-        aliases=["code"],
+        "code",
+        aliases=["claude"],
         help="Abre Claude Code (ou OpenCode via --harness) conectado ao modelo Code ativo",
         epilog=CODE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
