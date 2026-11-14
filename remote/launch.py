@@ -11,6 +11,8 @@ import sys
 from urllib.request import urlopen
 
 CONF = json.loads(Path("/content/colab-ai-config.json").read_text())
+if CONF.get("hf_token"):
+    os.environ["HF_TOKEN"] = CONF["hf_token"]
 VOICE = CONF.get("mode") == "voice"
 ASR = CONF.get("mode") == "transcribe"
 VIDEO = CONF.get("mode") == "video"
@@ -52,6 +54,6 @@ else:
         proc = subprocess.Popen([sys.executable, "-u", str(BOOTSTRAP)],
                                 stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True,
-                                close_fds=True)
+                                close_fds=True, env=os.environ.copy())
     BOOT_PID.write_text(str(proc.pid))
     print(f"Preparação remota iniciada: PID={proc.pid}. Log={BOOT_LOG}", flush=True)

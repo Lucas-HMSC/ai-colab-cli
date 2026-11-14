@@ -44,6 +44,8 @@ if gib < CONFIG['min_gib']:
 os.environ['HF_XET_HIGH_PERFORMANCE'] = '1' if CONFIG.get('hf_mode') == 'fast' else '0'
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
 os.environ.pop('HF_HUB_ENABLE_HF_TRANSFER', None)
+if CONFIG.get('hf_token'):
+    os.environ['HF_TOKEN'] = CONFIG['hf_token']
 if not shutil.which('ffmpeg'):
     subprocess.check_call(['apt-get', 'update', '-qq'], stdout=subprocess.DEVNULL)
     subprocess.check_call(['apt-get', 'install', '-y', '-qq', 'ffmpeg'], stdout=subprocess.DEVNULL)

@@ -388,7 +388,9 @@ def do_hf(args):
         preferences_write(value)
         print("Próximas sessões: hf_xet", args.action, "— configuração aplicada após novo start")
     else:
-        print("Download Hugging Face:", value["hf_mode"], "(hf_xet; cache local efêmero)")
+        has_token = bool((os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip())
+        print("Download Hugging Face:", value["hf_mode"], "(hf_xet; cache local efêmero)",
+              "| HF_TOKEN:", "configurado" if has_token else "ausente")
 
 
 @contextmanager
@@ -1019,8 +1021,9 @@ def do_start(args) -> None:
                "asr_variant": profile.get("asr_variant"),
                "video_variant": profile.get("video_variant"),
                "hf_mode": state.get("hf_mode", "fast")}
-    if mode == "transcribe" and os.environ.get("HF_TOKEN", "").strip():
-        payload["hf_token"] = os.environ["HF_TOKEN"].strip()
+    hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    if hf_token:
+        payload["hf_token"] = hf_token
     config_file = STATE_DIR / "remote-config.json"
     config_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     config_file.chmod(0o600)

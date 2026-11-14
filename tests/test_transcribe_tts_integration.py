@@ -449,3 +449,51 @@ class LoadDiarizerTests(TestCase):
         self.assertIs(first, second)
         fake_pipeline_cls.from_pretrained.assert_called_once_with(
             'pyannote/speaker-diarization-community-1', token='hf_test_123')
+
+
+class HfTokenPropagationTests(TestCase):
+    def _run_start_capture_config(self, env_vars):
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = Path(temp)
+            captured = {}
+
+            class _StopUpload(Exception):
+                pass
+
+            def fake_run(cmd, **kwargs):
+                if 'upload' in cmd:
+                    captured['payload'] = json.loads((state_dir / 'remote-config.json').read_text(encoding='utf-8'))
+                    raise _StopUpload()
+                return mock.MagicMock(returncode=0, stdout='')
+
+            args = app.parser_make().parse_args(['start', 'code'])
+            with mock.patch.dict('os.environ', env_vars, clear=True), \
+                    mock.patch.object(app, 'STATE_DIR', state_dir), \
+                    mock.patch.object(app, 'state_read', return_value={}), \
+                    mock.patch.object(app, 'state_write'), \
+                    mock.patch.object(app, 'ensure_key'), \
+                    mock.patch.object(app, 'cli_base', return_value=['colab']), \
+                    mock.patch.object(app, 'remote_session_exists', return_value=True), \
+                    mock.patch.object(app, 'pid_running', return_value=False), \
+                    mock.patch.object(app, 'run', side_effect=fake_run):
+                with self.assertRaises(_StopUpload):
+                    app.do_start(args)
+            return captured['payload']
+
+    def test_do_start_code_writes_hf_token_when_present(self):
+        payload = self._run_start_capture_config({'HF_TOKEN': 'hf_all_modes_123', 'PATH': '/usr/bin:/bin'})
+        self.assertEqual(payload['mode'], 'code')
+        self.assertEqual(payload.get('hf_token'), 'hf_all_modes_123')
+
+    def test_do_start_code_omits_hf_token_when_absent(self):
+        payload = self._run_start_capture_config({'PATH': '/usr/bin:/bin'})
+        self.assertEqual(payload['mode'], 'code')
+        self.assertNotIn('hf_token', payload)
+
+    def test_remote_scripts_propagate_hf_token(self):
+        root = Path(__file__).resolve().parents[1] / 'remote'
+        for name in ('launch.py', 'bootstrap.py', 'voice_bootstrap.py',
+                     'transcribe_bootstrap.py', 'video_bootstrap.py', 'video_api.py'):
+            text = (root / name).read_text(encoding='utf-8')
+            self.assertIn('hf_token', text, f'{name} não lê hf_token do config')
+            self.assertIn('HF_TOKEN', text, f'{name} não exporta HF_TOKEN')

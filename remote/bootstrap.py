@@ -31,6 +31,8 @@ model = config["model"]
 model_path = model
 os.environ['HF_XET_HIGH_PERFORMANCE'] = '1' if config.get('hf_mode') == 'fast' else '0'
 os.environ.pop('HF_HUB_ENABLE_HF_TRANSFER', None)
+if config.get("hf_token"):
+    os.environ["HF_TOKEN"] = config["hf_token"]
 info = subprocess.check_output(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], text=True).strip().splitlines()[0]
 gpu, mem = info.split(",", 1)
 match = re.search(r"([\d.]+)\s*MiB", mem)
@@ -88,7 +90,8 @@ else:
     logfile = LOG_FILE
     with logfile.open("ab") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+                                stdin=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                                env=os.environ.copy())
     PID_FILE.write_text(str(proc.pid))
     print(f"vLLM iniciado, PID={proc.pid}. Log: {logfile} | modelo={model}", flush=True)
     # Verificar falha imediata (ex.: flag desconhecida) sem bloquear o kernel por horas.

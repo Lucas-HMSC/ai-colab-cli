@@ -36,6 +36,8 @@ if gib < conf['min_gib']:
 os.environ['HF_XET_HIGH_PERFORMANCE'] = '1' if conf.get('hf_mode') == 'fast' else '0'
 os.environ.pop('HF_HUB_ENABLE_HF_TRANSFER', None)
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+if conf.get('hf_token'):
+    os.environ['HF_TOKEN'] = conf['hf_token']
 
 # O Colab CLI usa Python 3.13. Preserve o Qwen3-TTS que já funcionava no
 # runtime original. Os backends alternativos têm Python e pacotes isolados.

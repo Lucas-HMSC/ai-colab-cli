@@ -19,6 +19,8 @@ os.environ['USE_FLAX'] = '0'
 os.environ['USE_TF'] = '0'
 
 CONF = json.loads(Path(os.environ.get('COLAB_AI_VIDEO_CONFIG', '/content/colab-ai-config.json')).read_text())
+if CONF.get('hf_token'):
+    os.environ['HF_TOKEN'] = CONF['hf_token']
 VARIANT = CONF['video_variant']
 MODEL = CONF['model']
 ROOT = Path(os.environ.get('COLAB_AI_VIDEO_ROOT', '/content/colab-ai-videos'))
