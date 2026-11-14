@@ -1609,11 +1609,14 @@ def do_transcribe(args):
     begun = time.monotonic()
     try:
         conn.putrequest('POST', '/_colab_ai/transcribe')
-        for header, value in {
+        headers = {
             'X-Api-Key': state['token'], 'Content-Type': 'application/octet-stream',
             'Content-Length': str(size), 'X-Colab-Ai-Extension': source.suffix.lower(),
             'X-Colab-Ai-Language': args.language,
-        }.items():
+        }
+        if getattr(args, "word_timestamps", False):
+            headers['X-Colab-Ai-Word-Timestamps'] = 'true'
+        for header, value in headers.items():
             conn.putheader(header, value)
         conn.endheaders()
         with source.open('rb') as src:
@@ -2127,6 +2130,8 @@ def parser_make():
     a.add_argument("--json", action="store_true", help="Saída em JSON quando usado com 'models'")
     a.add_argument("--stdout", action="store_true",
                    help="Imprime a transcrição direto no stdout, sem gravar arquivo (ignora --output)")
+    a.add_argument("--word-timestamps", action="store_true",
+                   help="Inclui timestamps por palavra no JSON da transcrição")
     a.set_defaults(func=do_transcribe)
     voice = sub.add_parser(
         "voice",

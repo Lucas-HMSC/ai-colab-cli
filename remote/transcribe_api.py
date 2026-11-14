@@ -132,15 +132,26 @@ def whisper_preflight(model):
     print('Whisper: autoteste de inferência CUDA aprovado', flush=True)
 
 
-def infer(model, audio_path, duration, language='pt'):
+def infer(model, audio_path, duration, language='pt', word_timestamps=False):
     if VARIANT == 'whisper':
         waveform = whisper_pcm16_to_array(audio_path)
         seg_iter, info = model.transcribe(waveform, language=None if language == 'auto' else 'pt',
                                          task='transcribe', beam_size=5, vad_filter=True,
                                          condition_on_previous_text=True,
-                                         word_timestamps=False)
-        segments = [{'start': round(float(s.start), 3), 'end': round(float(s.end), 3),
-                     'text': s.text.strip()} for s in seg_iter if s.text.strip()]
+                                         word_timestamps=word_timestamps)
+        # Iteração única: monta segmentos e (opcionais) palavras de uma vez só.
+        segments = []
+        words = []
+        for s in seg_iter:
+            if s.text.strip():
+                segments.append({'start': round(float(s.start), 3),
+                                 'end': round(float(s.end), 3), 'text': s.text.strip()})
+            if word_timestamps:
+                for w in getattr(s, 'words', None) or []:
+                    text = w.word.strip()
+                    if text:
+                        words.append({'start': round(float(w.start), 3),
+                                      'end': round(float(w.end), 3), 'word': text})
         transcript = ' '.join(s['text'] for s in segments)
         detected = info.language or 'desconhecido'
     else:
@@ -151,9 +162,22 @@ def infer(model, audio_path, duration, language='pt'):
         detected = result.language or 'desconhecido'
         items = result.time_stamps.items if result.time_stamps is not None else []
         segments = align_to_segments(items)
-    return {'model': MODEL_ID, 'engine': VARIANT, 'language': detected,
-            'duration_seconds': duration, 'text': transcript, 'segments': segments,
-            'timestamps': bool(segments)}
+        words = []
+        if word_timestamps:
+            for it in items:
+                text = str(getattr(it, 'text', '')).strip()
+                start = float(getattr(it, 'start_time', 0))
+                end = float(getattr(it, 'end_time', start))
+                if not text or start < 0 or end < start:
+                    continue
+                words.append({'start': round(start, 3), 'end': round(end, 3), 'word': text})
+    payload = {'model': MODEL_ID, 'engine': VARIANT, 'language': detected,
+               'duration_seconds': duration, 'text': transcript, 'segments': segments,
+               'timestamps': bool(segments),
+               'word_timestamps': bool(words) if word_timestamps else False}
+    if word_timestamps:
+        payload['words'] = words
+    return payload
 
 
 def handler_for(model):
@@ -183,6 +207,10 @@ def handler_for(model):
                 size = int(self.headers.get('Content-Length', '-1'))
                 ext = self.headers.get('X-Colab-Ai-Extension', '').lower()
                 language = self.headers.get('X-Colab-Ai-Language', 'pt').lower()
+                raw_ts = self.headers.get('X-Colab-Ai-Word-Timestamps', 'false').strip().lower()
+                if raw_ts not in ('true', '1', 'yes', 'false', '0', 'no'):
+                    return self.reply(400, {'error': 'Header X-Colab-Ai-Word-Timestamps inválido (use true ou false)'})
+                word_timestamps = raw_ts in ('true', '1', 'yes')
                 if not 0 < size <= MAX_UPLOAD or ext not in SUPPORTED_EXT or language not in ('pt', 'auto'):
                     return self.reply(400, {'error': 'Arquivo, extensão ou idioma inválido (máx. 150 MiB)'})
                 with tempfile.TemporaryDirectory(prefix='colab-asr-') as directory:
@@ -199,7 +227,8 @@ def handler_for(model):
                     duration = duration_for(source)
                     to_wav(source, wav)
                     with LOCK:
-                        response = infer(model, wav, duration, language=language)
+                        response = infer(model, wav, duration, language=language,
+                                         word_timestamps=word_timestamps)
                 self.reply(200, response)
             except (ValueError, subprocess.TimeoutExpired) as exc:
                 self.reply(422, {'error': type(exc).__name__, 'message': str(exc)[:180]})
