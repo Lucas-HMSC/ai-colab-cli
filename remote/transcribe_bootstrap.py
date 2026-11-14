@@ -27,6 +27,8 @@ if gib < CONF['min_gib']:
 os.environ['HF_XET_HIGH_PERFORMANCE'] = '1' if CONF.get('hf_mode') == 'fast' else '0'
 os.environ.pop('HF_HUB_ENABLE_HF_TRANSFER', None)
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+if CONF.get('hf_token'):
+    os.environ['HF_TOKEN'] = CONF['hf_token']
 
 uv = shutil.which('uv')
 if not uv:
@@ -36,7 +38,7 @@ python_bin = ENV / 'bin/python'
 if not python_bin.exists():
     print('Preparando Python 3.12 isolado para ASR...', flush=True)
     subprocess.check_call([uv, 'venv', '--python', '3.12', '--seed', str(ENV)])
-marker = ENV / '.colab-asr-v028-ready'
+marker = ENV / ('.colab-asr-v028-diarize-ready' if CONF.get('hf_token') else '.colab-asr-v028-ready')
 if not marker.exists():
     print('Instalando dependências ASR:', VARIANT, flush=True)
     if VARIANT == 'whisper':
@@ -46,6 +48,8 @@ if not marker.exists():
         packages = ['qwen-asr', 'huggingface_hub>=0.34', 'hf_xet', 'soundfile', 'librosa']
     else:
         raise RuntimeError('Perfil ASR desconhecido')
+    if CONF.get('hf_token'):
+        packages.append('pyannote.audio>=3.1')
     subprocess.check_call([uv, 'pip', 'install', '--python', str(python_bin), *packages])
     marker.write_text('ready\n')
 # As bibliotecas CUDA usadas pelo CTranslate2 precisam estar no caminho do

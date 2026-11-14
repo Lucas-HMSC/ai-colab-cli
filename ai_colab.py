@@ -1019,6 +1019,8 @@ def do_start(args) -> None:
                "asr_variant": profile.get("asr_variant"),
                "video_variant": profile.get("video_variant"),
                "hf_mode": state.get("hf_mode", "fast")}
+    if mode == "transcribe" and os.environ.get("HF_TOKEN", "").strip():
+        payload["hf_token"] = os.environ["HF_TOKEN"].strip()
     config_file = STATE_DIR / "remote-config.json"
     config_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     config_file.chmod(0o600)

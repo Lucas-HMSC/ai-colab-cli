@@ -184,12 +184,20 @@ ai-colab asr --file ~/Downloads/entrevista.mp3 \
   --language pt \
   --output ~/Downloads/entrevista
 
+# Saída estruturada em stdout (sem gravar arquivo), com tempos por palavra e falantes
+HF_TOKEN=hf_... ai-colab start asr --model whisper --gpu T4
+ai-colab asr --file ~/Downloads/entrevista.mp3 --json --word-timestamps --diarize
+
 # Encerrar a GPU após concluir
 ai-colab stop
 ```
 
 **Detalhes importantes:**
 - `--format`: `txt` (padrão), `srt`, `json` ou `all` (gera os três arquivos). Use `--overwrite` para sobrescrever arquivos existentes.
+- `--stdout`: imprime apenas a transcrição no `stdout` sem gravar arquivos em disco (incompatível com `--format all`).
+- `--json`: com `--file`, equivale a `--format json --stdout` (ideal para automação/pipelines).
+- `--word-timestamps`: inclui `words` e `word_timestamps: true` no JSON de resposta (suportado em `whisper` e `qwen`).
+- `--diarize`: identifica falantes (`Falante 1`, `Falante 2`, ...) usando `pyannote/speaker-diarization-community-1`. Requer aceitar a licença do modelo e exportar `HF_TOKEN` antes de `ai-colab start asr` para provisionar `pyannote.audio` na VM.
 - `--language`: `pt` (padrão, força português) ou `auto` (detecção automática).
 - **Formatos aceitos:** `wav`, `mp3`, `m4a`, `mp4`, `ogg`, `oga`, `opus`, `flac`, `aac`, `webm`, `mov`, `mpeg`, `mpga`, `wma` (upload de até **150 MiB**).
 - Nenhum conteúdo transcrito é gravado nos logs do servidor.
@@ -248,6 +256,7 @@ Nenhum dos comandos abaixo inicia uma nova GPU:
 
 ```bash
 ai-colab status --remote               # Estado local + sessão no Colab
+ai-colab status --json                 # Estado local, porta, token e runtime em JSON
 ai-colab gpu status                    # Modelo da GPU, uso, VRAM, temperatura e processos
 ai-colab gpu status --watch 10         # Acompanhamento contínuo a cada 10s
 ai-colab gpu status --deep --json      # Inclui verificação PyTorch/CUDA em JSON

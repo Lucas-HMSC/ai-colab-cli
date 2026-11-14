@@ -1,3 +1,13 @@
+# v0.3.3 — integração programática ASR (`status --json`, `--stdout`, `word_timestamps` e diarização)
+
+- **`ai-colab status --json`**: emite JSON limpo com estado da sessão (`active`, `mode`, `model`, `gpu`, `port`, `token`, estado dos processos locais, `api_ready`, `api_detail` e `runtime`), facilitando automação e descoberta pelo `tts-api`.
+- **`ai-colab transcribe --stdout` e `--json` com `--file`**: imprime a transcrição diretamente no `stdout` sem mensagens de progresso nem gravação de arquivos em disco (`--json` com `--file` equivale a `--format json --stdout`; `--stdout` com `--format all` é rejeitado antes da conexão).
+- **`--word-timestamps` / `X-Colab-Ai-Word-Timestamps`**: retorna `word_timestamps` e `words` no JSON para `whisper` (`faster-whisper`) e `qwen` (`Qwen3-ForcedAligner`).
+- **`--diarize` / `X-Colab-Ai-Diarize`**: separação de falantes (`Falante 1`, `Falante 2`, ...) via `pyannote/speaker-diarization-community-1` com carregamento lazy no worker ASR, rótulos consistentes entre `segments` e `words`, prefixo `[Falante N]` em `txt`/`srt` e campo `has_speaker_labels` no JSON.
+- **Bootstrap ASR com `HF_TOKEN`**: quando `HF_TOKEN` está definido no ambiente ao iniciar `transcribe`, `ai-colab start` envia `hf_token` na configuração remota e `remote/transcribe_bootstrap.py` instala `pyannote.audio>=3.1` em marcador dedicado (`.colab-asr-v028-diarize-ready`).
+
+---
+
 # v0.3.2 — correção da inicialização Wan 2.2 com Flax/JAX/NumPy
 
 - Corrige o erro real `AttributeError: module numpy.dtypes has no attribute StringDType` que ocorria ao importar o Wan na G4 (Colab Python 3.13, PyTorch CUDA funcional).

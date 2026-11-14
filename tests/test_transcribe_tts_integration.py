@@ -402,3 +402,50 @@ class DiarizeHeaderTests(TestCase):
             handler.do_POST()
         reply.assert_called_once()
         self.assertEqual(reply.call_args.args[0], 400)
+
+
+class LoadDiarizerTests(TestCase):
+    def _load_with_conf(self, conf_dict, suffix):
+        original = Path.read_text
+        conf = json.dumps(conf_dict)
+
+        def fake_read(path, *args, **kwargs):
+            if str(path) == '/content/colab-ai-config.json':
+                return conf
+            return original(path, *args, **kwargs)
+
+        spec = importlib.util.spec_from_file_location(
+            'asr_diarizer_' + suffix, Path(__file__).resolve().parents[1] / 'remote/transcribe_api.py')
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.object(Path, 'read_text', new=fake_read):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_load_diarizer_requires_hf_token(self):
+        mod = self._load_with_conf({'model': 'teste/model', 'asr_variant': 'whisper'}, 'notok')
+        with mock.patch.dict('os.environ', {}, clear=True):
+            with self.assertRaisesRegex(ValueError, 'HF_TOKEN'):
+                mod.load_diarizer()
+
+    def test_load_diarizer_uses_configured_hf_token_and_caches(self):
+        import sys
+        import types
+        mod = self._load_with_conf(
+            {'model': 'teste/model', 'asr_variant': 'whisper', 'hf_token': 'hf_test_123'},
+            'withtok',
+        )
+        fake_pipeline_cls = mock.MagicMock()
+        fake_pipeline_cls.from_pretrained.return_value = 'pipeline-instance'
+        fake_pyannote = types.ModuleType('pyannote')
+        fake_pyannote_audio = types.ModuleType('pyannote.audio')
+        fake_pyannote_audio.Pipeline = fake_pipeline_cls
+        fake_pyannote.audio = fake_pyannote_audio
+        with mock.patch.dict('os.environ', {}, clear=True), \
+                mock.patch.dict(sys.modules, {'pyannote': fake_pyannote,
+                                              'pyannote.audio': fake_pyannote_audio}):
+            first = mod.load_diarizer()
+            second = mod.load_diarizer()
+        self.assertEqual(first, 'pipeline-instance')
+        self.assertIs(first, second)
+        fake_pipeline_cls.from_pretrained.assert_called_once_with(
+            'pyannote/speaker-diarization-community-1', token='hf_test_123')
