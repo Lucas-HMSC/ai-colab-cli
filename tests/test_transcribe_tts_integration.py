@@ -263,3 +263,142 @@ class TranscribeApiWordTimestampsTests(TestCase):
             handler.do_POST()
         reply.assert_called_once()
         self.assertEqual(reply.call_args.args[0], 400)
+
+
+class TranscribeDiarizeClientTests(TestCase):
+    def test_diarize_flag_sends_header(self):
+        state = {"mode": "transcribe", "model": "whisper", "port": 6420, "token": "tok-123"}
+        with tempfile.TemporaryDirectory() as temp:
+            audio = Path(temp) / 'entrada.wav'
+            audio.write_bytes(b'RIFF' + b'\x00' * 32)
+            # Com --diarize: header presente.
+            args = app.parser_make().parse_args(
+                ['transcribe', '--file', str(audio), '--json', '--diarize'])
+            connection = _fake_asr_response()
+            with mock.patch.object(app, 'state_read', return_value=state), \
+                    mock.patch('http.client.HTTPConnection', return_value=connection):
+                with redirect_stdout(io.StringIO()):
+                    app.do_transcribe(args)
+            sent = {c.args[0]: c.args[1] for c in connection.putheader.call_args_list}
+            self.assertEqual(sent.get('X-Colab-Ai-Diarize'), 'true')
+            # Sem a flag: header ausente.
+            args = app.parser_make().parse_args(['transcribe', '--file', str(audio), '--json'])
+            connection = _fake_asr_response()
+            with mock.patch.object(app, 'state_read', return_value=state), \
+                    mock.patch('http.client.HTTPConnection', return_value=connection):
+                with redirect_stdout(io.StringIO()):
+                    app.do_transcribe(args)
+            sent = {c.args[0] for c in connection.putheader.call_args_list}
+            self.assertNotIn('X-Colab-Ai-Diarize', sent)
+
+
+class RenderSpeakerTests(TestCase):
+    def test_txt_without_speaker_is_unchanged(self):
+        payload = {'text': 'Olá mundo.',
+                   'segments': [{'start': 0.0, 'end': 1.0, 'text': 'Olá mundo.'}]}
+        self.assertEqual(app._render_transcription(payload, 'txt'), 'Olá mundo.\n')
+
+    def test_txt_with_speaker_prefixes_lines(self):
+        payload = {'text': 'Olá mundo.', 'segments': [
+            {'start': 0.0, 'end': 1.0, 'text': 'Olá', 'speaker': 'Falante 1'},
+            {'start': 1.0, 'end': 2.0, 'text': 'mundo.'}]}
+        self.assertEqual(app._render_transcription(payload, 'txt'),
+                         '[Falante 1] Olá\nmundo.\n')
+
+    def test_srt_with_speaker_prefixes_only_text_lines(self):
+        base = {'segments': [{'start': 0.0, 'end': 1.0, 'text': 'Olá mundo.'}]}
+        payload = {'segments': [{'start': 0.0, 'end': 1.0, 'text': 'Olá mundo.',
+                                 'speaker': 'Falante 1'}]}
+        plain = app._render_transcription(base, 'srt').split('\n')
+        spaky = app._render_transcription(payload, 'srt').split('\n')
+        # Mesma estrutura; apenas a linha de legenda ganha o prefixo.
+        for i, line in enumerate(plain):
+            self.assertEqual(spaky[i], ('[Falante 1] ' + line) if i == 2 else line)
+
+
+class AssignSpeakersTests(TestCase):
+    def test_normaliza_ids_em_ordem_da_primeira_aparição(self):
+        mod = _load_api('whisper')
+        items = [{'start': 0.0, 'end': 1.0}, {'start': 2.0, 'end': 3.0}]
+        turns = [(0.0, 1.0, 'SPEAKER_00'), (2.0, 3.0, 'SPEAKER_01')]
+        result = mod.assign_speakers(items, turns)
+        self.assertEqual([i['speaker'] for i in result], ['Falante 1', 'Falante 2'])
+
+    def test_maior_sobreposição_e_sem_sobreposição(self):
+        mod = _load_api('whisper')
+        items = [{'start': 0.0, 'end': 2.0}, {'start': 2.5, 'end': 5.5},
+                 {'start': 6.0, 'end': 8.0}, {'start': 1.0, 'end': 6.0},
+                 {'start': 0.5, 'end': 1.5}]
+        turns = [(0.0, 2.0, 'SPEAKER_00'), (3.0, 5.0, 'SPEAKER_01')]
+        result = mod.assign_speakers(items, turns)
+        self.assertEqual([i['speaker'] for i in result],
+                         ['Falante 1', 'Falante 2', None, 'Falante 2', 'Falante 1'])
+
+
+class InferDiarizeTests(TestCase):
+    def _whisper_engine(self):
+        seg = mock.MagicMock()
+        seg.start, seg.end, seg.text = 0.0, 1.25, 'Olá mundo. '
+        w1 = mock.MagicMock(); w1.start, w1.end, w1.word = 0.0, 0.6, 'Olá'
+        w2 = mock.MagicMock(); w2.start, w2.end, w2.word = 0.7, 1.2, ' mundo.'
+        seg.words = [w1, w2]
+        engine = mock.MagicMock()
+        engine.transcribe.return_value = (iter([seg]), mock.MagicMock(language='pt'))
+        return engine
+
+    def test_infer_diarize_true_segments_and_words(self):
+        mod = _load_api('whisper')
+        turns = [(0.0, 1.0, 'SPK_A'), (0.7, 1.3, 'SPK_B')]
+        engine = self._whisper_engine()
+        with mock.patch.object(mod, 'whisper_pcm16_to_array', return_value=object()), \
+                mock.patch.object(mod, 'diarize_audio', return_value=turns) as diarize:
+            payload = mod.infer(engine, 'x.wav', 1.0, word_timestamps=True, diarize=True)
+        diarize.assert_called_once_with('x.wav')
+        self.assertTrue(payload['has_speaker_labels'])
+        self.assertEqual(payload['segments'][0]['speaker'], 'Falante 1')
+        self.assertEqual(payload['words'][0]['speaker'], 'Falante 1')  # 0.0–0.6 → SPK_A
+        self.assertEqual(payload['words'][1]['speaker'], 'Falante 2')  # 0.7–1.2 → SPK_B
+
+    def test_infer_diarize_consistency_between_segments_and_words(self):
+        mod = _load_api('whisper')
+        turns = [(0.0, 1.0, 'SPK_A'), (0.7, 1.3, 'SPK_B')]
+        seg = mock.MagicMock()
+        seg.start, seg.end, seg.text = 0.0, 1.25, 'Olá mundo. '
+        w1 = mock.MagicMock(); w1.start, w1.end, w1.word = 0.7, 1.2, 'mundo.'
+        w2 = mock.MagicMock(); w2.start, w2.end, w2.word = 0.0, 0.6, 'Olá'
+        seg.words = [w1, w2]
+        engine = mock.MagicMock()
+        engine.transcribe.return_value = (iter([seg]), mock.MagicMock(language='pt'))
+        with mock.patch.object(mod, 'whisper_pcm16_to_array', return_value=object()), \
+                mock.patch.object(mod, 'diarize_audio', return_value=turns):
+            payload = mod.infer(engine, 'x.wav', 1.0, word_timestamps=True, diarize=True)
+        # O 1º word cai em SPK_B antes de SPK_A aparecer em words: os IDs
+        # devem ser compartilhados com os segmentos (não reiniciados).
+        self.assertEqual(payload['segments'][0]['speaker'], 'Falante 1')  # SPK_A
+        self.assertEqual(payload['words'][0]['speaker'], 'Falante 2')     # SPK_B
+        self.assertEqual(payload['words'][1]['speaker'], 'Falante 1')     # SPK_A, idêntico ao segmento
+
+    def test_infer_diarize_false_default(self):
+        mod = _load_api('whisper')
+        engine = self._whisper_engine()
+        with mock.patch.object(mod, 'whisper_pcm16_to_array', return_value=object()), \
+                mock.patch.object(mod, 'diarize_audio') as diarize:
+            payload = mod.infer(engine, 'x.wav', 1.0)
+        diarize.assert_not_called()
+        self.assertFalse(payload['has_speaker_labels'])
+        self.assertNotIn('speaker', payload['segments'][0])
+
+
+class DiarizeHeaderTests(TestCase):
+    def test_do_post_rejects_invalid_diarize_header(self):
+        mod = _load_api('whisper')
+        with mock.patch.object(mod.BaseHTTPRequestHandler, 'handle', lambda self: None):
+            handler = mod.handler_for(object())(mock.MagicMock(), ('127.0.0.1', 12345),
+                                                mock.MagicMock())
+        handler.path = '/_colab_ai/transcribe'
+        handler.headers = {'Content-Length': '10', 'X-Colab-Ai-Extension': '.wav',
+                           'X-Colab-Ai-Language': 'pt', 'X-Colab-Ai-Diarize': 'sim'}
+        with mock.patch.object(handler, 'reply') as reply:
+            handler.do_POST()
+        reply.assert_called_once()
+        self.assertEqual(reply.call_args.args[0], 400)

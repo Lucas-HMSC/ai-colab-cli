@@ -48,6 +48,31 @@ def align_to_segments(items, max_words=12, max_duration=6.0):
     return result
 
 
+def assign_speakers(items, turns, labels=None):
+    """Atribui 'speaker' a cada item pelo turno com maior sobreposição temporal.
+
+    Função pura: IDs normalizados em ordem de primeira aparição
+    ('Falante 1', 'Falante 2', ...); item sem sobreposição recebe None.
+    Passar o mesmo dict `labels` a duas chamadas mantém os IDs consistentes.
+    """
+    if labels is None:
+        labels = {}
+    for item in items:
+        best, best_overlap = None, 0.0
+        for t_start, t_end, raw in turns:
+            overlap = min(item['end'], t_end) - max(item['start'], t_start)
+            if overlap > best_overlap:
+                best, best_overlap = raw, overlap
+        if best is None:
+            item['speaker'] = None
+        elif best not in labels:
+            labels[best] = len(labels) + 1
+            item['speaker'] = f'Falante {labels[best]}'
+        else:
+            item['speaker'] = f'Falante {labels[best]}'
+    return items
+
+
 def duration_for(path):
     p = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1', str(path)],
@@ -104,6 +129,40 @@ def load_model():
     raise RuntimeError('Perfil ASR desconhecido')
 
 
+_DIARIZER = None
+
+
+def load_diarizer():
+    """Carrega o pipeline de diarização (pyannote) com import lazy e cache."""
+    global _DIARIZER
+    if _DIARIZER is not None:
+        return _DIARIZER
+    token = os.environ.get('HF_TOKEN') or CONF.get('hf_token')
+    if not token:
+        raise ValueError('Diarização requer token do Hugging Face: defina HF_TOKEN ou "hf_token" no config')
+    try:
+        from pyannote.audio import Pipeline
+    except ImportError:
+        raise ValueError('Diarização requer pyannote.audio instalado no worker ASR')
+    _DIARIZER = Pipeline.from_pretrained(
+        CONF.get('diarize_model', 'pyannote/speaker-diarization-community-1'), token=token)
+    return _DIARIZER
+
+
+def diarize_audio(audio_path):
+    """Retorna turnos (t_start, t_end, raw_speaker) do áudio via pyannote.
+
+    pyannote 4+ (speaker-diarization-community-1) retorna objeto com
+    .speaker_diarization; versões antigas retornam o Annotation diretamente.
+    """
+    pipeline = load_diarizer()
+    diarization = pipeline(str(audio_path))
+    annotation = getattr(diarization, 'speaker_diarization', diarization)
+    tracks = annotation.itertracks(yield_label=True) if hasattr(annotation, 'itertracks') else annotation
+    return [(float(turn.start), float(turn.end), speaker)
+            for turn, _, speaker in tracks]
+
+
 def classify_whisper_failure(exc):
     """Classifica erros da GPU sem imprimir transcrições nem caminhos do áudio."""
     message = str(exc).lower()
@@ -132,7 +191,7 @@ def whisper_preflight(model):
     print('Whisper: autoteste de inferência CUDA aprovado', flush=True)
 
 
-def infer(model, audio_path, duration, language='pt', word_timestamps=False):
+def infer(model, audio_path, duration, language='pt', word_timestamps=False, diarize=False):
     if VARIANT == 'whisper':
         waveform = whisper_pcm16_to_array(audio_path)
         seg_iter, info = model.transcribe(waveform, language=None if language == 'auto' else 'pt',
@@ -171,13 +230,30 @@ def infer(model, audio_path, duration, language='pt', word_timestamps=False):
                 if not text or start < 0 or end < start:
                     continue
                 words.append({'start': round(start, 3), 'end': round(end, 3), 'word': text})
+    if diarize:
+        turns = diarize_audio(audio_path)
+        labels = {}
+        assign_speakers(segments, turns, labels)
+        if word_timestamps:
+            assign_speakers(words, turns, labels)
     payload = {'model': MODEL_ID, 'engine': VARIANT, 'language': detected,
                'duration_seconds': duration, 'text': transcript, 'segments': segments,
                'timestamps': bool(segments),
-               'word_timestamps': bool(words) if word_timestamps else False}
+               'word_timestamps': bool(words) if word_timestamps else False,
+               'has_speaker_labels': any(s.get('speaker') for s in segments) if diarize else False}
     if word_timestamps:
         payload['words'] = words
     return payload
+
+
+def _parse_bool_header(value, name):
+    """Valida header booleano (true/1/yes/false/0/no); ValueError com nome do header."""
+    raw = str(value if value is not None else 'false').strip().lower()
+    if raw in ('true', '1', 'yes'):
+        return True
+    if raw in ('false', '0', 'no'):
+        return False
+    raise ValueError(f'Header {name} inválido (use true ou false)')
 
 
 def handler_for(model):
@@ -204,13 +280,18 @@ def handler_for(model):
             if self.path != '/_colab_ai/transcribe':
                 return self.reply(404, {'error': 'Rota desconhecida'})
             try:
+                word_timestamps = _parse_bool_header(
+                    self.headers.get('X-Colab-Ai-Word-Timestamps', 'false'),
+                    'X-Colab-Ai-Word-Timestamps')
+                diarize = _parse_bool_header(
+                    self.headers.get('X-Colab-Ai-Diarize', 'false'),
+                    'X-Colab-Ai-Diarize')
+            except ValueError as exc:
+                return self.reply(400, {'error': str(exc)})
+            try:
                 size = int(self.headers.get('Content-Length', '-1'))
                 ext = self.headers.get('X-Colab-Ai-Extension', '').lower()
                 language = self.headers.get('X-Colab-Ai-Language', 'pt').lower()
-                raw_ts = self.headers.get('X-Colab-Ai-Word-Timestamps', 'false').strip().lower()
-                if raw_ts not in ('true', '1', 'yes', 'false', '0', 'no'):
-                    return self.reply(400, {'error': 'Header X-Colab-Ai-Word-Timestamps inválido (use true ou false)'})
-                word_timestamps = raw_ts in ('true', '1', 'yes')
                 if not 0 < size <= MAX_UPLOAD or ext not in SUPPORTED_EXT or language not in ('pt', 'auto'):
                     return self.reply(400, {'error': 'Arquivo, extensão ou idioma inválido (máx. 150 MiB)'})
                 with tempfile.TemporaryDirectory(prefix='colab-asr-') as directory:
@@ -228,7 +309,7 @@ def handler_for(model):
                     to_wav(source, wav)
                     with LOCK:
                         response = infer(model, wav, duration, language=language,
-                                         word_timestamps=word_timestamps)
+                                         word_timestamps=word_timestamps, diarize=diarize)
                 self.reply(200, response)
             except (ValueError, subprocess.TimeoutExpired) as exc:
                 self.reply(422, {'error': type(exc).__name__, 'message': str(exc)[:180]})

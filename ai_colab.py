@@ -1549,11 +1549,15 @@ def _formats_from_options(input_path: Path, output: str | None, fmt: str):
 
 
 def _render_transcription(payload: dict, fmt: str) -> str:
+    segments = payload.get('segments') or []
     if fmt == 'txt':
+        if any(seg.get('speaker') for seg in segments):
+            # Com diarização: uma linha por segmento, prefixada quando houver falante.
+            return ''.join(f"[{seg['speaker']}] {seg['text'].strip()}\n" if seg.get('speaker')
+                           else f"{seg['text'].strip()}\n" for seg in segments)
         return (payload.get('text') or '').strip() + '\n'
     if fmt == 'json':
         return json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
-    segments = payload.get('segments') or []
     if not segments:
         raise RuntimeError("Modelo não retornou timestamps reais. Não será gerado SRT fictício.")
     parts = []
@@ -1561,7 +1565,10 @@ def _render_transcription(payload: dict, fmt: str) -> str:
         start, end = float(seg['start']), float(seg['end'])
         if end < start:
             raise RuntimeError('Timestamp inválido retornado pela engine')
-        parts.append(f"{number}\n{_srt_clock(start)} --> {_srt_clock(end)}\n{seg['text'].strip()}\n")
+        text = seg['text'].strip()
+        if seg.get('speaker'):
+            text = f"[{seg['speaker']}] {text}"
+        parts.append(f"{number}\n{_srt_clock(start)} --> {_srt_clock(end)}\n{text}\n")
     return '\n'.join(parts) + '\n'
 
 
@@ -1616,6 +1623,8 @@ def do_transcribe(args):
         }
         if getattr(args, "word_timestamps", False):
             headers['X-Colab-Ai-Word-Timestamps'] = 'true'
+        if getattr(args, "diarize", False):
+            headers['X-Colab-Ai-Diarize'] = 'true'
         for header, value in headers.items():
             conn.putheader(header, value)
         conn.endheaders()
@@ -2132,6 +2141,8 @@ def parser_make():
                    help="Imprime a transcrição direto no stdout, sem gravar arquivo (ignora --output)")
     a.add_argument("--word-timestamps", action="store_true",
                    help="Inclui timestamps por palavra no JSON da transcrição")
+    a.add_argument("--diarize", action="store_true",
+                   help="Identifica os falantes e marca cada segmento como [Falante 1], [Falante 2], ...")
     a.set_defaults(func=do_transcribe)
     voice = sub.add_parser(
         "voice",
