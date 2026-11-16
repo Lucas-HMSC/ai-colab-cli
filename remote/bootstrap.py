@@ -86,6 +86,7 @@ elif old_vllm_alive():
     print("vLLM já está inicializando na VM; preservando o processo e os downloads.", flush=True)
 else:
     PID_FILE.unlink(missing_ok=True)
+    kv_cache_dtype = config.get("kv_cache_dtype") or ("auto" if "A100" in gpu.upper() else "fp8")
     cmd = [shutil.which("vllm") or "/usr/local/bin/vllm", "serve", model_path,
            "--host", "127.0.0.1", "--port", "8000",
            "--served-model-name", model,
@@ -93,19 +94,34 @@ else:
            "--gpu-memory-utilization", str(config["gpu_util"]),
            "--max-model-len", str(config["context"]),
            "--max-num-seqs", "1", "--max-num-batched-tokens", "8192",
-           "--kv-cache-dtype", "fp8", "--enable-prefix-caching",
+           "--kv-cache-dtype", kv_cache_dtype, "--enable-prefix-caching",
            "--enable-auto-tool-choice", "--tool-call-parser", config["tool_parser"]]
     if config.get("reasoning_parser"):
         cmd += ["--reasoning-parser", config["reasoning_parser"]]
     logfile = LOG_FILE
-    with logfile.open("ab") as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-                                env=os.environ.copy())
-    PID_FILE.write_text(str(proc.pid))
-    print(f"vLLM iniciado, PID={proc.pid}. Log: {logfile} | modelo={model}", flush=True)
-    # Verificar falha imediata (ex.: flag desconhecida) sem bloquear o kernel por horas.
-    time.sleep(3)
+
+    def launch(command):
+        with logfile.open("ab") as log:
+            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                                    env=os.environ.copy())
+        PID_FILE.write_text(str(proc.pid))
+        print(f"vLLM iniciado, PID={proc.pid}. Log: {logfile} | modelo={model}", flush=True)
+        # Verificar falha imediata (ex.: flag desconhecida) sem bloquear o kernel por horas.
+        time.sleep(3)
+        return proc
+
+    mtp = int(config.get("mtp") or 0)
+    if mtp:
+        # MTP nativo: speculative decoding; a saída é verificada pelo modelo principal.
+        spec = json.dumps({"method": "mtp", "num_speculative_tokens": mtp})
+        proc = launch(cmd + ["--speculative-config", spec])
+        if proc.poll() is not None:
+            print(f"MTP rejeitado (código {proc.returncode}); reiniciando sem MTP.", flush=True)
+            print("\n".join(logfile.read_text(errors="replace").splitlines()[-15:]))
+            proc = launch(cmd)
+    else:
+        proc = launch(cmd)
     if proc.poll() is not None:
         print("\n".join(logfile.read_text(errors="replace").splitlines()[-35:]))
         raise RuntimeError(f"vLLM encerrou ao inicializar, código {proc.returncode}")

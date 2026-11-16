@@ -18,6 +18,10 @@ class StartStandardizationTests(unittest.TestCase):
             (["start", "code", "-m", "qwen-next"], "code", "code-next"),
             (["start", "code", "--model", "code-next"], "code", "code-next"),
             (["start", "code-next"], "code-next", "code-next"),
+            (["start", "code", "--model", "qwen-next-a100"], "code", "code-next-a100"),
+            (["start", "code", "-m", "next-a100"], "code", "code-next-a100"),
+            (["start", "code", "-m", "a100"], "code", "code-next-a100"),
+            (["start", "code-next-a100"], "code-next-a100", "code-next-a100"),
         ]
         for argv, expected_mode, expected_variant in cases:
             with self.subTest(argv=argv):
@@ -121,6 +125,52 @@ class StartStandardizationTests(unittest.TestCase):
                 self.assertEqual(saved["voice_variant"], "kokoro")
                 self.assertEqual(saved["model"], cli.VOICE_MODELS["kokoro"])
                 self.assertEqual(saved["gpu"], "T4")
+
+    def test_do_start_qwen_next_a100_defaults_and_clients(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_state = Path(d)
+            with mock.patch.object(cli, "STATE_DIR", fake_state), \
+                 mock.patch.object(cli, "STATE_FILE", fake_state / "state.json"), \
+                 mock.patch.object(cli, "ensure_key", return_value=fake_state / "id_ed25519"), \
+                 mock.patch.object(cli, "cli_base", return_value=["/usr/bin/colab", "--auth=oauth2"]), \
+                 mock.patch.object(cli.shutil, "which", return_value="/usr/bin/ssh"), \
+                 mock.patch.object(cli, "remote_session_exists", side_effect=[False, True]), \
+                 mock.patch.object(cli, "run", return_value=cli.subprocess.CompletedProcess([], 0, "")), \
+                 mock.patch.object(cli, "launch_process", return_value=777), \
+                 mock.patch.object(cli, "tunnel_start", side_effect=lambda s: s), \
+                 mock.patch.object(cli, "watchdog_start"), \
+                 mock.patch.object(cli, "wait_ready"):
+                args = cli.parser_make().parse_args(["start", "code", "--model", "qwen-next-a100", "--port", "28401"])
+                cli.do_start(args)
+                saved = cli.state_read()
+                self.assertEqual(saved["mode"], "code")
+                self.assertEqual(saved["model"], "cyankiwi/Qwen3-Coder-Next-AWQ-4bit")
+                self.assertEqual(saved["gpu"], "A100")
+                self.assertEqual(saved["context"], 262144)
+
+                remote_cfg = json.loads((fake_state / "remote-config.json").read_text(encoding="utf-8"))
+                self.assertEqual(remote_cfg["kv_cache_dtype"], "auto")
+                self.assertEqual(remote_cfg["min_gib"], 75)
+                self.assertEqual(remote_cfg["tool_parser"], "qwen3_coder")
+                self.assertEqual(remote_cfg["context"], 262144)
+
+                opencode_cfg = fake_state / "opencode.json"
+                cli.configure_opencode_provider(saved, opencode_cfg)
+                oc_data = json.loads(opencode_cfg.read_text(encoding="utf-8"))
+                oc_model = oc_data["providers"]["colab-qwen"]["models"]["qwen-coding"]
+                self.assertEqual(oc_model["modelID"], "cyankiwi/Qwen3-Coder-Next-AWQ-4bit")
+                self.assertEqual(oc_model["limit"]["context"], 262144)
+                self.assertIn("A100", oc_model["name"])
+
+                with mock.patch.object(cli, "_prepare_code_session", return_value=saved), \
+                     mock.patch.object(cli.shutil, "which", return_value="/usr/bin/claude"), \
+                     mock.patch.object(cli, "ensure_claude_onboarding"), \
+                     mock.patch.object(cli.os, "execvpe") as execvpe:
+                    cli.do_claude(cli.parser_make().parse_args(["code"]))
+                    execvpe.assert_called_once()
+                    _, _, env = execvpe.call_args[0]
+                    self.assertEqual(env["ANTHROPIC_MODEL"], "cyankiwi/Qwen3-Coder-Next-AWQ-4bit")
+                    self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "262144")
 
 
 class SymmetryAndCatalogTests(unittest.TestCase):

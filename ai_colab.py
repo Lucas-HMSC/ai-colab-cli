@@ -49,7 +49,7 @@ REMOTE_PROXY_PORT = 8001
 PROFILES = {
     "code": {
         "model": "Qwen/Qwen3.8-27B-FP8", "context": 131072,
-        "min_gib": 38, "gpu_util": 0.88, "tool_parser": "qwen3_coder",
+        "min_gib": 38, "gpu_util": 0.88, "tool_parser": "qwen3_coder", "mtp": 2,
         "reasoning_parser": "qwen3", "effort": "medium",
         "note": "Padrão recomendado: qualidade agentiva; já testado no Colab G4 via notebook.",
     },
@@ -58,6 +58,13 @@ PROFILES = {
         "min_gib": 85, "gpu_util": 0.95, "tool_parser": "qwen3_coder",
         "reasoning_parser": None, "effort": "medium",
         "note": "Experimental: 80B totais, possível OOM em 96 GB; sem modo thinking.",
+    },
+    "code-next-a100": {
+        "model": "cyankiwi/Qwen3-Coder-Next-AWQ-4bit", "context": 262144,
+        "min_gib": 75, "gpu_util": 0.94, "tool_parser": "qwen3_coder",
+        "reasoning_parser": None, "effort": "medium", "gpu": "A100",
+        "kv_cache_dtype": "auto",
+        "note": "Qwen3-Coder-Next 4-bit (AWQ) para A100 80 GB com contexto 256K; sem modo thinking.",
     },
 }
 COMING = {
@@ -187,6 +194,13 @@ MODEL_CATALOG = {
             "gpu": "G4",
             "repo": PROFILES["code-next"]["model"],
             "note": PROFILES["code-next"]["note"],
+        },
+        "qwen-next-a100": {
+            "variant": "code-next-a100",
+            "aliases": ("code-next-a100", "next-a100", "a100"),
+            "gpu": PROFILES["code-next-a100"]["gpu"],
+            "repo": PROFILES["code-next-a100"]["model"],
+            "note": PROFILES["code-next-a100"]["note"],
         },
     },
     "voice": {
@@ -969,7 +983,8 @@ def do_start(args) -> None:
         state = {"mode": mode, "model": profile["model"], "session": args.session,
                  "auth": args.auth, "gpu": (args.gpu or (VOICE_DEFAULT_GPU[args.voice_model] if mode == "voice" else
                                           ASR_DEFAULT_GPU[args.asr_model] if mode == "transcribe" else
-                                          VIDEO_DEFAULT_GPU[args.video_model] if mode == "video" else "G4")), "port": args.port,
+                                          VIDEO_DEFAULT_GPU[args.video_model] if mode == "video" else
+                                          profile.get("gpu", "G4"))), "port": args.port,
                  "token": secrets.token_urlsafe(36), "context": profile["context"],
                  "tunnel_pid": None, "serve_pid": None,
                  "watchdog_pid": None, "hf_mode": (args.hf_mode or preferences_read()["hf_mode"]),
@@ -1020,7 +1035,9 @@ def do_start(args) -> None:
                "key": state["token"], "mode": mode, "voice_variant": profile.get("voice_variant"),
                "asr_variant": profile.get("asr_variant"),
                "video_variant": profile.get("video_variant"),
-               "hf_mode": state.get("hf_mode", "fast")}
+               "hf_mode": state.get("hf_mode", "fast"),
+               "kv_cache_dtype": profile.get("kv_cache_dtype", "auto" if state.get("gpu") == "A100" else "fp8"),
+               "mtp": profile.get("mtp", 0)}
     hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
     if hf_token:
         payload["hf_token"] = hf_token
@@ -2005,7 +2022,7 @@ Comandos por categoria:
     usage | hf                            Unidades do Colab e modo hf_xet
 
 Modalidades, modelos (--model) e GPUs recomendadas:
-  code              qwen (padrão, G4), qwen-next (80B, G4)
+  code              qwen (padrão, G4), qwen-next (80B, G4), qwen-next-a100 (80B 4-bit, A100)
   voice (tts)       custom (padrão, L4), design (L4), clone (L4),
                     voxcpm2 (L4), chatterbox-br (L4), kokoro (T4)
   transcribe (asr)  whisper (padrão, T4), qwen (L4)
@@ -2024,7 +2041,7 @@ Use "ai-colab <comando> --help" para ver opções e exemplos de cada comando.
 
 START_EPILOG = """\
 Modelos por modalidade (--model / -m):
-  code              qwen (padrão, Qwen3.8-27B, G4), qwen-next (80B, G4)
+  code              qwen (padrão, Qwen3.8-27B, G4), qwen-next (80B, G4), qwen-next-a100 (80B 4-bit, A100)
   voice | tts       custom (padrão, L4), design (L4), clone (L4),
                     voxcpm2 (L4), chatterbox-br (L4), kokoro (T4)
   transcribe | asr  whisper (padrão, T4), qwen (L4)
@@ -2113,12 +2130,12 @@ def parser_make():
         epilog=START_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    a.add_argument("mode", choices=["code", "code-next", "voice", "tts", "transcribe", "asr", "video", *COMING],
+    a.add_argument("mode", choices=["code", "code-next", "code-next-a100", "voice", "tts", "transcribe", "asr", "video", *COMING],
                    default="code", nargs="?",
                    help="Modalidade a iniciar (padrão: code). Aliases: tts=voice, asr=transcribe")
     a.add_argument("-m", "--model", dest="model", default=None, metavar="MODELO",
-                   help="Modelo da modalidade (ex.: qwen, qwen-next, custom, voxcpm2, kokoro, whisper, hunyuan15, wan)")
-    a.add_argument("--gpu", default=None, help="GPU Colab (ex.: T4, L4, G4). Se omitida, usa a recomendada do modelo")
+                   help="Modelo da modalidade (ex.: qwen, qwen-next, qwen-next-a100, custom, voxcpm2, kokoro, whisper, hunyuan15, wan)")
+    a.add_argument("--gpu", default=None, help="GPU Colab (ex.: T4, L4, G4, A100). Se omitida, usa a recomendada do modelo")
     a.add_argument("--voice-model", choices=list(ACTIVE_VOICE_MODELS), default="custom",
                    help=argparse.SUPPRESS)
     a.add_argument("--video-model", choices=sorted(VIDEO_ACTIVE_MODELS), default="hunyuan15",
