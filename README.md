@@ -64,6 +64,7 @@ Consulte este catálogo a qualquer momento no terminal com `ai-colab models`, `a
 |---|---|---|---|---|---|
 | `code` | — | `qwen` *(padrão)* | `code`, `27b` | `G4` | `Qwen/Qwen3.8-27B-FP8` (131k contexto padrão) |
 | `code` | — | `qwen-next` | `code-next`, `next`, `80b` | `G4` | `Qwen/Qwen3-Coder-Next-FP8` (32k contexto; experimental) |
+| `code` | — | `qwen-next-a100` | `code-next-a100`, `next-a100`, `a100` | `A100` | `cyankiwi/Qwen3-Coder-Next-AWQ-4bit` (256k contexto na A100 80 GB; sem modo thinking) |
 | `voice` | `tts` | `custom` *(padrão)* | `qwen` | `L4` | `Qwen3-TTS-12Hz-1.7B-CustomVoice` (`generate`) |
 | `voice` | `tts` | `design` | — | `L4` | `Qwen3-TTS-12Hz-1.7B-VoiceDesign` (`design`) |
 | `voice` | `tts` | `clone` | — | `L4` | `Qwen3-TTS-12Hz-1.7B-Base` (`clone` com áudio + texto) |
@@ -85,7 +86,7 @@ ai-colab start <modalidade> [--model MODELO] [--gpu GPU] [--wait SEGUNDOS] [--hf
 ```
 
 - `--model` / `-m`: seleciona o modelo da modalidade (se omitido, usa o padrão da modalidade).
-- `--gpu`: sobrescreve a GPU recomendada (ex.: `T4`, `L4`, `G4`).
+- `--gpu`: sobrescreve a GPU recomendada (ex.: `T4`, `L4`, `G4`, `A100`).
 - `--wait`: tempo máximo de espera para download e carregamento inicial em segundos (padrão `900`).
 - `--context`: tamanho da janela de contexto em tokens *(exclusivo da modalidade `code`)*.
 - `--auth`: método de autenticação da `colab` CLI (`oauth2` padrão ou `adc`).
@@ -104,7 +105,10 @@ Inicia um servidor vLLM compatível com as APIs Anthropic e OpenAI no Colab e co
 # Iniciar GPU com o modelo padrão (Qwen3.8-27B-FP8)
 ai-colab start code --model qwen --gpu G4
 
-# Opcional: ajustar janela de contexto (padrão: 131072)
+# Alternativa para A100 80 GB (Qwen3-Coder-Next 4-bit AWQ, contexto máximo 256K)
+ai-colab start code --model qwen-next-a100
+
+# Opcional: ajustar janela de contexto (padrão: 131072 em code; 262144 em qwen-next-a100)
 ai-colab start code --model qwen --gpu G4 --context 262144
 
 # Abrir sessão com o cliente padrão (Claude Code, ou OpenCode se claude estiver ausente)
