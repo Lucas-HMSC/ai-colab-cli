@@ -140,13 +140,28 @@ def load_diarizer():
     token = os.environ.get('HF_TOKEN') or CONF.get('hf_token')
     if not token:
         raise ValueError('Diarização requer token do Hugging Face: defina HF_TOKEN ou "hf_token" no config')
+    # Colab define MPLBACKEND=module://matplotlib_inline.backend_inline, ausente no venv isolado do ASR.
+    os.environ['MPLBACKEND'] = 'Agg'
     try:
         from pyannote.audio import Pipeline
     except ImportError:
         raise ValueError('Diarização requer pyannote.audio instalado no worker ASR')
-    _DIARIZER = Pipeline.from_pretrained(
+    pipeline = Pipeline.from_pretrained(
         CONF.get('diarize_model', 'pyannote/speaker-diarization-community-1'), token=token)
+    if hasattr(pipeline, 'to'):
+        import torch
+        if torch.cuda.is_available():
+            pipeline.to(torch.device('cuda'))
+    _DIARIZER = pipeline
     return _DIARIZER
+
+
+def load_pcm16_waveform_tensor(audio_path):
+    """Decodifica WAV PCM16 16 kHz mono em tensor float32 (1, N) sem torchcodec."""
+    import torch
+
+    samples = whisper_pcm16_to_array(audio_path)
+    return torch.from_numpy(samples).unsqueeze(0)
 
 
 def diarize_audio(audio_path):
@@ -156,10 +171,15 @@ def diarize_audio(audio_path):
     .speaker_diarization; versões antigas retornam o Annotation diretamente.
     """
     pipeline = load_diarizer()
-    diarization = pipeline(str(audio_path))
+    waveform = load_pcm16_waveform_tensor(audio_path)
+    diarization = pipeline({'waveform': waveform, 'sample_rate': 16000})
     annotation = getattr(diarization, 'speaker_diarization', diarization)
-    tracks = annotation.itertracks(yield_label=True) if hasattr(annotation, 'itertracks') else annotation
-    return [(float(turn.start), float(turn.end), speaker)
+    tracks = (
+        annotation.itertracks(yield_label=True)
+        if hasattr(annotation, 'itertracks')
+        else annotation
+    )
+    return [(float(turn.start), float(turn.end), str(speaker))
             for turn, _, speaker in tracks]
 
 
@@ -295,24 +315,25 @@ def handler_for(model):
                 if not 0 < size <= MAX_UPLOAD or ext not in SUPPORTED_EXT or language not in ('pt', 'auto'):
                     return self.reply(400, {'error': 'Arquivo, extensão ou idioma inválido (máx. 150 MiB)'})
                 with tempfile.TemporaryDirectory(prefix='colab-asr-') as directory:
-                    source = Path(directory) / ('entrada' + ext)
-                    remaining = size
-                    with source.open('wb') as output:
-                        while remaining > 0:
-                            block = self.rfile.read(min(65536, remaining))
-                            if not block:
-                                raise ValueError('Upload interrompido')
-                            output.write(block)
-                            remaining -= len(block)
-                    wav = Path(directory) / 'audio.wav'
-                    duration = duration_for(source)
-                    to_wav(source, wav)
+                    try:
+                        source = Path(directory) / ('entrada' + ext)
+                        remaining = size
+                        with source.open('wb') as output:
+                            while remaining > 0:
+                                block = self.rfile.read(min(65536, remaining))
+                                if not block:
+                                    raise ValueError('Upload interrompido')
+                                output.write(block)
+                                remaining -= len(block)
+                        wav = Path(directory) / 'audio.wav'
+                        duration = duration_for(source)
+                        to_wav(source, wav)
+                    except (ValueError, subprocess.TimeoutExpired) as exc:
+                        return self.reply(422, {'error': type(exc).__name__, 'message': str(exc)[:180]})
                     with LOCK:
                         response = infer(model, wav, duration, language=language,
                                          word_timestamps=word_timestamps, diarize=diarize)
                 self.reply(200, response)
-            except (ValueError, subprocess.TimeoutExpired) as exc:
-                self.reply(422, {'error': type(exc).__name__, 'message': str(exc)[:180]})
             except Exception as exc:
                 # Não registrar nomes, textos ou conteúdo de áudio.
                 import traceback
